@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0a0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<title>Пульт · Home</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/app-180.png">
+<link rel="stylesheet" href="/static/ui.css">
+<style>
+.remote-page{background:#0a0d10;color:#e8eaed;min-height:100dvh;display:flex;flex-direction:column;touch-action:manipulation;-webkit-user-select:none;user-select:none;overscroll-behavior:none}
+.remote-main{flex:1;display:flex;flex-direction:column;padding:0 16px 16px;gap:12px}
+#targetLabel{flex:1;text-align:center;font-size:15px;font-weight:500;color:#9aa0a6}
+.dpad-wrap{display:flex;justify-content:center;align-items:center;flex:1;min-height:220px}
+.dpad{position:relative;width:260px;height:260px;border-radius:50%;background:#1f2227;border:1px solid #2c2f36}
+.dpad-btn{position:absolute;width:72px;height:72px;background:#2c2f36;border:none;border-radius:50%;color:#e8eaed;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;touch-action:none}
+.dpad-btn:active{background:#3c4043}
+.dpad-up{top:12px;left:50%;transform:translateX(-50%)}
+.dpad-down{bottom:12px;left:50%;transform:translateX(-50%)}
+.dpad-left{left:12px;top:50%;transform:translateY(-50%)}
+.dpad-right{right:12px;top:50%;transform:translateY(-50%)}
+.dpad-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:90px;height:90px;background:#3c4043;border:none;border-radius:50%;color:#e8eaed;font-size:16px;font-weight:600;cursor:pointer}
+.dpad-center:active{background:#4a4d55}
+.remote-actions{display:flex;justify-content:center;gap:20px;padding:4px 0}
+.round-btn{width:56px;height:56px;border-radius:50%;background:#2c2f36;border:1px solid #3c4043;color:#e8eaed;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;touch-action:none}
+.round-btn:active{background:#3c4043}
+.round-btn:disabled{opacity:.35;cursor:not-allowed}
+.round-btn.small{width:44px;height:44px;font-size:16px}
+.round-btn.accent{background:#e8eaed;color:#0a0d10;border-color:#e8eaed}
+.volume-bar{display:flex;align-items:center;gap:10px;justify-content:center;padding:6px 0}
+.volume-bar input[type=range]{flex:1;max-width:200px;height:6px;-webkit-appearance:none;appearance:none;background:#2c2f36;border-radius:3px;outline:none}
+.volume-bar input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#e8eaed;cursor:pointer}
+.touchpad{flex:1;background:#1f2227;border-radius:16px;border:1px solid #2c2f36;position:relative;overflow:hidden;min-height:220px;touch-action:none}
+.touchpad-cursor{position:absolute;width:20px;height:20px;background:#e8eaed;border-radius:50%;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0;transition:opacity .15s;pointer-events:none}
+.touchpad-cursor.active{opacity:1}
+.keyboard-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0d10;z-index:100;display:none;flex-direction:column;padding:16px}
+.keyboard-overlay.active{display:flex}
+.kb-header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.kb-display{flex:1;background:#1f2227;border-radius:12px;padding:12px 14px;border:1px solid #2c2f36}
+.kb-display input{width:100%;background:transparent;border:none;color:#e8eaed;font-size:16px;outline:none}
+.kb-suggestions{display:flex;gap:8px;overflow-x:auto;padding:4px 0;margin-bottom:8px}
+.kb-chip{background:#2c2f36;border:1px solid #3c4043;color:#9aa0a6;padding:6px 12px;border-radius:20px;font-size:13px;white-space:nowrap}
+.kb-layout{display:flex;flex-direction:column;gap:6px;flex:1;justify-content:flex-end}
+.kb-row{display:flex;gap:5px;justify-content:center}
+.kb-key{min-width:30px;height:42px;flex:1;max-width:42px;background:#2c2f36;border:1px solid #3c4043;color:#e8eaed;border-radius:6px;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;touch-action:none}
+.kb-key:active{background:#3c4043}
+.kb-key.wide{max-width:none;flex:2}
+.kb-key.accent{background:#8ab4f8;color:#0a0d10;border-color:#8ab4f8}
+.kb-actions{display:flex;gap:6px;margin-top:8px}
+.view-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px 16px 4px}
+.view-tab{height:40px;border:1px solid #343840;border-radius:12px;background:#1f2227;color:#9aa0a6;font-weight:600}
+.view-tab.active{background:#e8eaed;color:#0a0d10;border-color:#e8eaed}
+.gamepad-launch{height:40px;padding:0 14px;border:1px solid #8ab4f8;border-radius:12px;background:#172438;color:#8ab4f8;font-weight:700}
+.gamepad{position:fixed;inset:0;z-index:300;display:none;background:#0a0d10;color:#e8eaed;overflow:hidden;touch-action:none}
+.gamepad.active{display:block}
+.gamepad-top{position:absolute;left:18px;right:18px;top:max(10px,env(safe-area-inset-top));display:flex;align-items:center;justify-content:space-between;z-index:2}
+.gamepad-top-group{display:flex;gap:10px}
+.gp-top-btn{min-width:88px;height:42px;padding:0 14px;border:1px solid #3c4043;border-radius:12px;background:#1f2227;color:#e8eaed;font-weight:650}
+.gp-top-btn.exit{min-width:48px;color:#f28b82}
+.gp-shoulder{position:absolute;top:76px;width:116px;height:48px;border:1px solid #3c4043;border-radius:15px;background:#252930;color:#e8eaed;font-size:18px;font-weight:750}
+.gp-shoulder.left{left:22%}.gp-shoulder.right{right:22%}
+.gp-dpad{position:absolute;left:5.5%;bottom:10%;width:210px;height:210px}
+.gp-btn{position:absolute;border:1px solid #41464f;background:#292d34;color:#fff;touch-action:none;-webkit-tap-highlight-color:transparent}
+.gp-btn.pressed{background:#8ab4f8;color:#0a0d10;transform:scale(.94)}
+.gp-dpad .gp-btn{width:72px;height:72px;border-radius:18px;font-size:25px}
+.gp-up{left:69px;top:0}.gp-down{left:69px;bottom:0}.gp-left{left:0;top:69px}.gp-right{right:0;top:69px}
+.gp-actions{position:absolute;right:5.5%;bottom:10%;width:220px;height:220px}
+.gp-face{width:76px;height:76px;border-radius:50%;font-size:27px;font-weight:800}
+.gp-y{left:72px;top:0}.gp-x{left:0;top:72px}.gp-b{right:0;top:72px}.gp-a{left:72px;bottom:0}
+.gp-center{position:absolute;left:50%;bottom:15%;transform:translateX(-50%);display:flex;gap:14px}
+.gp-center .gp-top-btn{min-width:92px}
+@media (orientation:portrait){
+  .gamepad.active{width:100dvh;height:100dvw;transform:rotate(90deg) translateY(-100%);transform-origin:top left}
+}
+</style>
+</head>
+<body class="remote-page">
+<header class="detail-topbar">
+  <button class="icon-btn" type="button" onclick="location.href='/phone'" aria-label="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/arrow-left.svg')"></span></button>
+  <span id="targetLabel">Home</span>
+  <button class="icon-btn" type="button" onclick="send('reload')" aria-label="Оновити"><span class="mdi" style="--icon:url('/static/icons/mdi/refresh.svg')"></span></button>
+  <button class="icon-btn" type="button" onclick="powerOff()" aria-label="Вимкнути"><span class="mdi" style="--icon:url('/static/icons/mdi/power.svg')"></span></button>
+</header>
+
+<div class="view-tabs" id="viewTabs">
+  <button class="view-tab active" type="button" data-view="pult">Пульт</button>
+  <button class="view-tab" type="button" data-view="touchpad">Тачпад</button>
+  <button class="view-tab" type="button" data-view="keyboard">Клава</button>
+</div>
+
+<main class="remote-main">
+  <div id="pultView">
+    <div class="dpad-wrap">
+      <div class="dpad">
+        <button class="dpad-btn dpad-up" data-action="up" aria-label="Вгору">▲</button>
+        <button class="dpad-btn dpad-left" data-action="left" aria-label="Вліво">◀</button>
+        <button class="dpad-center" data-action="ok" aria-label="OK">OK</button>
+        <button class="dpad-btn dpad-right" data-action="right" aria-label="Вправо">▶</button>
+        <button class="dpad-btn dpad-down" data-action="down" aria-label="Вниз">▼</button>
+      </div>
+    </div>
+    <div class="remote-actions">
+      <button class="round-btn" data-action="back" aria-label="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/arrow-left.svg')"></span></button>
+      <button class="round-btn" data-action="home" aria-label="Додому"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span></button>
+      <button class="round-btn" data-action="menu" aria-label="Меню"><span class="mdi" style="--icon:url('/static/icons/mdi/dots-vertical.svg')"></span></button>
+    </div>
+    <div class="remote-actions">
+      <button class="round-btn" data-action="playpause" aria-label="Play/Pause"><span class="mdi" style="--icon:url('/static/icons/mdi/play-pause.svg')"></span></button>
+      <button class="round-btn" data-action="rewind" aria-label="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/rewind.svg')"></span></button>
+      <button class="round-btn" data-action="forward" aria-label="Вперед"><span class="mdi" style="--icon:url('/static/icons/mdi/fast-forward.svg')"></span></button>
+    </div>
+  </div>
+
+  <div id="touchpadView" style="display:none;flex-direction:column;gap:14px;flex:1">
+    <div class="touchpad" id="touchpadArea" aria-label="Тачпад">
+      <div class="touchpad-cursor" id="tpCursor"></div>
+    </div>
+    <div class="remote-actions">
+      <button class="round-btn" data-action="back" aria-label="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/arrow-left.svg')"></span></button>
+      <button class="round-btn" data-action="home" aria-label="Додому"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span></button>
+      <button class="round-btn" data-action="menu" aria-label="Меню"><span class="mdi" style="--icon:url('/static/icons/mdi/dots-vertical.svg')"></span></button>
+    </div>
+  </div>
+
+  <div class="volume-bar">
+    <button class="round-btn small" data-action="mute" aria-label="Вимкнути звук"><span class="mdi" style="--icon:url('/static/icons/mdi/volume-off.svg')"></span></button>
+    <input type="range" id="volSlider" min="0" max="100" value="50" aria-label="Гучність">
+    <button class="round-btn small" data-action="volumeup" aria-label="Гучніше">+</button>
+  </div>
+  <div class="remote-actions" style="gap:32px">
+    <button class="round-btn small" data-action="volumedown" aria-label="Тихіше">−</button>
+    <button class="gamepad-launch" id="gamepadBtn" type="button">Геймпад</button>
+  </div>
+</main>
+
+<div class="keyboard-overlay" id="kbOverlay">
+  <div class="kb-header">
+    <button class="round-btn small" onclick="closeKeyboard()" aria-label="Закрити"><span class="mdi" style="--icon:url('/static/icons/mdi/arrow-down.svg')"></span></button>
+    <div class="kb-display" style="flex:1"><input type="text" id="kbInput" placeholder="Пошук фільмів, серіалів, застосунків і не тільки"></div>
+    <button class="round-btn small accent" onclick="kbEnter()" aria-label="Enter"><span class="mdi" style="--icon:url('/static/icons/mdi/magnify.svg')"></span></button>
+  </div>
+  <div class="kb-suggestions" id="kbSuggestions"></div>
+  <div class="kb-layout" id="kbLayout"></div>
+  <div class="kb-actions">
+    <button class="kb-key wide" onclick="kbLayoutCycle()" aria-label="Розкладка">🌐 <span id="layoutName">EN</span></button>
+    <button class="kb-key wide" onclick="kbType(' ')" aria-label="Пробіл">Space</button>
+    <button class="kb-key wide" onclick="kbBackspace()" aria-label="Стерти">⌫</button>
+    <button class="kb-key wide accent" onclick="kbEnter()" aria-label="Enter">Enter</button>
+  </div>
+</div>
+
+<section class="gamepad" id="gamepad" aria-label="Універсальний геймпад">
+  <div class="gamepad-top">
+    <div class="gamepad-top-group">
+      <button class="gp-top-btn" data-gamepad="library">До бібліотеки</button>
+      <button class="gp-top-btn" data-gamepad="android_tv">Android TV</button>
+    </div>
+    <button class="gp-top-btn exit" id="gamepadClose" type="button" data-gamepad="safe_exit" aria-label="Закрити геймпад">✕</button>
+  </div>
+  <button class="gp-shoulder left gp-btn" data-gamepad="l">L</button>
+  <button class="gp-shoulder right gp-btn" data-gamepad="r">R</button>
+  <div class="gp-dpad">
+    <button class="gp-btn gp-up" data-gamepad="dpad_up" aria-label="Вгору">▲</button>
+    <button class="gp-btn gp-left" data-gamepad="dpad_left" aria-label="Вліво">◀</button>
+    <button class="gp-btn gp-right" data-gamepad="dpad_right" aria-label="Вправо">▶</button>
+    <button class="gp-btn gp-down" data-gamepad="dpad_down" aria-label="Вниз">▼</button>
+  </div>
+  <div class="gp-center">
+    <button class="gp-top-btn gp-btn" data-gamepad="select">SELECT</button>
+    <button class="gp-top-btn gp-btn" data-gamepad="start">START</button>
+  </div>
+  <div class="gp-actions">
+    <button class="gp-btn gp-face gp-y" data-gamepad="y">Y</button>
+    <button class="gp-btn gp-face gp-x" data-gamepad="x">X</button>
+    <button class="gp-btn gp-face gp-b" data-gamepad="b">B</button>
+    <button class="gp-btn gp-face gp-a" data-gamepad="a">A</button>
+  </div>
+</section>
+
+<nav class="bottom-nav" aria-label="Навігація">
+  <a class="nav-item" href="/phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></a>
+  <a class="nav-item" href="/video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></a>
+  <a class="nav-item active" href="/remote"><span class="mdi" style="--icon:url('/static/icons/mdi/remote.svg')"></span><span>Пульт</span></a>
+  <a class="nav-item" href="/devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></a>
+</nav>
+
+<script>
+const $=id=>document.getElementById(id);
+let isTouchpad=false,lastNeedsKeyboard=false;
+
+function selectView(view){
+  if(view==='keyboard'){openKeyboard();return;}
+  isTouchpad=view==='touchpad';
+  $('pultView').style.display=isTouchpad?'none':'flex';
+  $('pultView').style.flexDirection='column';
+  $('touchpadView').style.display=isTouchpad?'flex':'none';
+  document.querySelectorAll('.view-tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));
+}
+document.querySelectorAll('.view-tab').forEach(tab=>tab.addEventListener('click',()=>selectView(tab.dataset.view)));
+
+/* === Status polling with auto-keyboard === */
+let supportedActions=new Set();
+async function pollStatus(){
+  try{
+    const r=await fetch('/api/remote/status');
+    const j=await r.json();
+    $('targetLabel').textContent=j.label||j.mode||'Home';
+    supportedActions=new Set(j.supported_actions||[]);
+    document.querySelectorAll('[data-action]').forEach(btn=>{
+      const a=btn.dataset.action;
+      if(['up','down','left','right','ok'].includes(a))return;
+      btn.disabled=!supportedActions.has(a);
+      btn.style.opacity=btn.disabled?'0.35':'1';
+    });
+    /* Auto-keyboard: open when backend signals needs_keyboard=true */
+    if(j.needs_keyboard && !lastNeedsKeyboard && !$('kbOverlay').classList.contains('active')){
+      openKeyboard();
+    }
+    lastNeedsKeyboard=!!j.needs_keyboard;
+  }catch(e){}
+}
+pollStatus();setInterval(pollStatus,2000);
+
+/* === Button actions === */
+async function send(action,phase='tap'){
+  try{
+    const r=await fetch('/api/remote/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,phase})});
+    if(!r.ok){const j=await r.json();console.warn(j.error||r.status);}
+  }catch(e){console.error(e);}
+}
+document.querySelectorAll('[data-action]').forEach(btn=>{
+  btn.addEventListener('click',()=>send(btn.dataset.action));
+});
+
+/* === Volume slider === */
+$('volSlider').addEventListener('input',async e=>{
+  try{await fetch('/api/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level:parseInt(e.target.value)})});}catch(e){}
+});
+
+/* === Touchpad === */
+const tp=$('touchpadArea');
+const cursor=$('tpCursor');
+let tpActive=false,tpX=0,tpY=0;
+function tpSend(action,payload){
+  fetch('/api/remote/pointer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})}).catch(()=>{});
+}
+tp.addEventListener('touchstart',e=>{
+  e.preventDefault();tpActive=true;
+  const t=e.touches[0];tpX=t.clientX;tpY=t.clientY;
+  const rect=tp.getBoundingClientRect();
+  cursor.style.left=(t.clientX-rect.left)+'px';cursor.style.top=(t.clientY-rect.top)+'px';cursor.classList.add('active');
+  tpSend('tap',{x:0,y:0,pressure:0});
+},{passive:false});
+tp.addEventListener('touchmove',e=>{
+  e.preventDefault();if(!tpActive)return;
+  const t=e.touches[0];
+  const dx=Math.max(-100,Math.min(100,t.clientX-tpX));
+  const dy=Math.max(-100,Math.min(100,t.clientY-tpY));
+  tpX=t.clientX;tpY=t.clientY;
+  const rect=tp.getBoundingClientRect();
+  cursor.style.left=(t.clientX-rect.left)+'px';cursor.style.top=(t.clientY-rect.top)+'px';
+  tpSend('move',{dx,dy,pressure:1});
+},{passive:false});
+tp.addEventListener('touchend',e=>{e.preventDefault();tpActive=false;cursor.classList.remove('active');tpSend('drag_end',{x:0,y:0,pressure:0});},{passive:false});
+tp.addEventListener('touchcancel',e=>{e.preventDefault();tpActive=false;cursor.classList.remove('active');tpSend('drag_end',{x:0,y:0,pressure:0});},{passive:false});
+
+/* === Keyboard === */
+const layouts={
+  us:{rows:[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['z','x','c','v','b','n','m']],name:'EN'},
+  ukrainian:{rows:[['й','ц','у','к','е','н','г','ш','щ','з','х','ї'],['ф','і','в','а','п','р','о','л','д','ж','є'],['я','ч','с','м','и','т','ь','б','ю','ґ']],name:'UK'},
+  russian:{rows:[['й','ц','у','к','е','н','г','ш','щ','з','х','ъ'],['ф','ы','в','а','п','р','о','л','д','ж','э'],['я','ч','с','м','и','т','ь','б','ю','ё']],name:'RU'},
+};
+let currentLayout='us';
+function renderKB(){
+  const container=$('kbLayout');container.innerHTML='';
+  const layout=layouts[currentLayout];
+  layout.rows.forEach(row=>{
+    const rowDiv=document.createElement('div');rowDiv.className='kb-row';
+    row.forEach(ch=>{
+      const btn=document.createElement('button');btn.className='kb-key';btn.textContent=ch;
+      btn.addEventListener('click',()=>kbType(ch));
+      rowDiv.appendChild(btn);
+    });
+    container.appendChild(rowDiv);
+  });
+  $('layoutName').textContent=layout.name;
+}
+function kbType(ch){
+  const input=$('kbInput');input.value+=ch;
+  fetch('/api/remote/keyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'text',text:ch,layout:currentLayout})}).catch(()=>{});
+}
+function kbBackspace(){
+  const input=$('kbInput');input.value=input.value.slice(0,-1);
+  fetch('/api/remote/keyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'key',key:'Backspace',layout:currentLayout})}).catch(()=>{});
+}
+function kbEnter(){
+  const text=$('kbInput').value;
+  fetch('/api/remote/keyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'text',text:text+'\n',layout:currentLayout})}).catch(()=>{});
+  closeKeyboard();
+}
+function kbLayoutCycle(){
+  const order=['us','ukrainian','russian'];
+  currentLayout=order[(order.indexOf(currentLayout)+1)%order.length];
+  renderKB();
+}
+function openKeyboard(){$('kbOverlay').classList.add('active');$('kbInput').value='';$('kbInput').focus();renderKB();}
+function closeKeyboard(){$('kbOverlay').classList.remove('active');lastNeedsKeyboard=false;}
+renderKB();
+
+/* === Universal landscape gamepad === */
+const gamepad=$('gamepad');
+const activeGamepadPointers=new Map();
+const gamepadReleaseTimers=new Map();
+async function requestLandscape(){
+  try{if(screen.orientation&&screen.orientation.lock)await screen.orientation.lock('landscape');}catch(e){}
+}
+function openGamepad(){gamepad.classList.add('active');requestLandscape();}
+function closeGamepad(){
+  releaseAllGamepad();
+  gamepad.classList.remove('active');
+  try{if(screen.orientation&&screen.orientation.unlock)screen.orientation.unlock();}catch(e){}
+}
+function gamepadSend(button,phase){
+  return fetch('/api/remote/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:button,phase,interface:'gamepad'})}).catch(()=>{});
+}
+function releaseAllGamepad(){
+  for(const [pointerId,button] of activeGamepadPointers)gamepadSend(button,'up');
+  activeGamepadPointers.clear();
+  for(const timer of gamepadReleaseTimers.values())clearTimeout(timer);
+  gamepadReleaseTimers.clear();
+  document.querySelectorAll('[data-gamepad].pressed').forEach(btn=>btn.classList.remove('pressed'));
+}
+document.querySelectorAll('[data-gamepad]').forEach(btn=>{
+  btn.addEventListener('pointerdown',e=>{
+    e.preventDefault();btn.setPointerCapture(e.pointerId);
+    activeGamepadPointers.set(e.pointerId,btn.dataset.gamepad);
+    btn.classList.add('pressed');gamepadSend(btn.dataset.gamepad,'down');
+    gamepadReleaseTimers.set(e.pointerId,setTimeout(()=>{
+      if(activeGamepadPointers.get(e.pointerId)!==btn.dataset.gamepad)return;
+      activeGamepadPointers.delete(e.pointerId);gamepadReleaseTimers.delete(e.pointerId);
+      btn.classList.remove('pressed');gamepadSend(btn.dataset.gamepad,'up');
+    },8000));
+  });
+  const finish=e=>{
+    const button=activeGamepadPointers.get(e.pointerId);if(!button)return;
+    activeGamepadPointers.delete(e.pointerId);
+    clearTimeout(gamepadReleaseTimers.get(e.pointerId));gamepadReleaseTimers.delete(e.pointerId);
+    btn.classList.remove('pressed');gamepadSend(button,'up');
+  };
+  btn.addEventListener('pointerup',finish);btn.addEventListener('pointercancel',finish);
+});
+$('gamepadBtn').addEventListener('click',openGamepad);
+$('gamepadClose').addEventListener('click',closeGamepad);
+window.addEventListener('blur',releaseAllGamepad);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseAllGamepad();});
+
+function powerOff(){if(!confirm('Вимкнути екран?'))return;send('power');}
+</script>
+</body></html>
