@@ -21,27 +21,7 @@
     "payload": {
       "type": "object",
       "maxProperties": 8,
-      "propertyNames": {
-        "not": {
-          "enum": [
-            "shell",
-            "command",
-            "ffmpeg_args",
-            "ffprobe_args",
-            "yt_dlp_args",
-            "output_path",
-            "browser_selector",
-            "executable_path",
-            "model_path",
-            "cookie",
-            "cookies",
-            "credential",
-            "credentials",
-            "api_key",
-            "headers"
-          ]
-        }
-      },
+      "additionalProperties": false,
       "properties": {
         "url": {"type": "string", "maxLength": 4096},
         "urls": {
