@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core.video_understanding.memory_gateway_adapter import (
     build_private_mutation,
     canonical_request_fingerprint,
@@ -13,10 +15,12 @@ from core.video_understanding.models import (
     ReviewDecision,
     SourceReference,
     VideoRecord,
+    VideoUnderstandingError,
 )
 
 
 MANIFEST_HASH = "a" * 64
+APPROVAL_REF = "operator.video.phase_a"
 
 
 def _record(revision: str = "r1") -> VideoRecord:
@@ -48,28 +52,45 @@ def _record(revision: str = "r1") -> VideoRecord:
     )
 
 
-def test_memory_gateway_envelope_is_exact_and_private() -> None:
-    envelope = build_private_mutation(_record())
+def test_memory_gateway_envelope_matches_current_main_contract() -> None:
+    envelope = build_private_mutation(_record(), approval_ref=APPROVAL_REF)
+    assert envelope["schema"] == "skeleton.memory_gateway.request.v1"
+    assert envelope["namespace"] == "skeleton"
     assert envelope["command"] == "skeleton.memory.private_mutate"
-    assert envelope["operation"] == "put"
-    assert envelope["private_mode"] is True
-    assert envelope["dataset"] == "video_understanding"
-    assert envelope["fact_key"] == "video:vr_synthetic:revision:r1"
-    assert envelope["value"]["about"]["summary"] == "synthetic private summary"
-    assert envelope["projection"] == {
-        "canonical_status": "PENDING",
-        "derived_status": "NOT_ATTEMPTED",
-    }
+    payload = envelope["payload"]
+    assert payload["schema"] == "skeleton.private_memory_gateway.mutation.v1"
+    assert payload["operation"] == "put"
+    assert payload["project_id"] == "skeleton"
+    assert payload["dataset_id"] == "video_understanding"
+    assert payload["fact_namespace"] == "video_understanding"
+    assert payload["fact_id"].startswith("video:")
+    assert payload["source_hash"] == MANIFEST_HASH
+    assert payload["approval_ref"] == APPROVAL_REF
+    assert payload["value"]["about"]["summary"] == "synthetic private summary"
+    assert payload["value"]["state"] == "UNDERSTOOD"
+    assert payload["value"]["mode"] == "STANDARD"
 
 
 def test_identical_replay_has_identical_identity_and_revision_changes_it() -> None:
-    first = build_private_mutation(_record("r1"))
-    replay = build_private_mutation(_record("r1"))
-    changed = build_private_mutation(_record("r2"))
-    assert first["idempotency_key"] == replay["idempotency_key"]
+    first = build_private_mutation(_record("r1"), approval_ref=APPROVAL_REF)
+    replay = build_private_mutation(_record("r1"), approval_ref=APPROVAL_REF)
+    changed = build_private_mutation(_record("r2"), approval_ref=APPROVAL_REF)
+    assert first["payload"]["idempotency_key"] == replay["payload"]["idempotency_key"]
     assert canonical_request_fingerprint(first) == canonical_request_fingerprint(replay)
-    assert changed["idempotency_key"] != first["idempotency_key"]
-    assert changed["fact_key"] != first["fact_key"]
+    assert changed["payload"]["idempotency_key"] != first["payload"]["idempotency_key"]
+    assert changed["payload"]["fact_id"] != first["payload"]["fact_id"]
+
+
+def test_mutation_requires_explicit_safe_approval_reference() -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        build_private_mutation(_record(), approval_ref="operator/unsafe")
+    assert exc.value.reason_code == "INVALID_GATEWAY_TOKEN"
+
+
+def test_expected_revision_rejects_boolean() -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        build_private_mutation(_record(), approval_ref=APPROVAL_REF, expected_revision=True)
+    assert exc.value.reason_code == "INVALID_EXPECTED_REVISION"
 
 
 def test_adapter_contains_no_direct_sqlite_or_database_path() -> None:
