@@ -1,38 +1,29 @@
 # Skeleton Video Understanding
 
-Skeleton Video Understanding is a universal private-first capability. DIOS is one domain profile, not the core.
+`Skeleton Video Understanding` is the universal video-analysis core. DIOS is one profile, not the owner of the generic pipeline.
 
-## Purpose
+## Stable operations
 
-The capability turns a supported URL or approved local-media identity into timestamped, reviewable knowledge:
+- `video_understand_url`
+- `video_import_urls`
+- `video_process_one`
+- `video_status`
+- `video_doctor`
+- `video_query`
+- `video_reprocess`
+- `video_attach_to_project`
 
-```text
-source
-→ metadata
-→ subtitles or local ASR
-→ frames/scenes/OCR
-→ transcript-frame alignment
-→ local multimodal understanding
-→ domain routing
-→ private artifact manifest
-→ MemoryGateway mutation
-→ human review
-→ optional reusable-knowledge promotion
-```
+Operation inputs contain semantic intent only. Executable paths, shell commands, `ffmpeg`/`yt-dlp` arguments, output paths, cookies, credentials and browser selectors remain private fixed runtime configuration.
 
-Automatic canon promotion is forbidden.
+## Processing modes
 
-## Modes
-
-- `QUICK`: metadata, subtitles and deterministic short summary. Local LLM is optional.
-- `STANDARD`: transcript, scene frames, OCR and local-LLM synthesis.
-- `DEEP`: workflows, entities, claims, conflicts, timestamped evidence and project mapping.
-- `TARGETED`: answer one bounded user question from video evidence.
-- `ARCHIVE`: preserve the verified source/evidence pack; local LLM is not required.
+- `QUICK`: metadata and subtitles, with deterministic fallback when the local language model is unavailable.
+- `STANDARD`: transcript, selected frames, OCR and local-LLM synthesis.
+- `DEEP`: workflows, entities, claims, contradictions, evidence and project mapping.
+- `TARGETED`: evidence-grounded answer to one question.
+- `ARCHIVE`: verified source/evidence pack without requiring LLM synthesis.
 
 ## Local AI roles
-
-The runtime uses separate local providers:
 
 ```text
 Sona
@@ -43,98 +34,79 @@ Ollama
 → VISUAL_EVIDENCE / TIMESTAMPS / ACTIONS / CONFLICTS / CONFIDENCE
 ```
 
-Ollama is accessed only through a fixed loopback HTTP endpoint from private runtime configuration. The default provider contract uses the native non-streaming `/api/chat` endpoint with JSON output. No cloud endpoint or fallback is permitted.
+The local LLM is used for synthesis only after deterministic processing has produced bounded evidence. It is required for `STANDARD`, `DEEP` and `TARGETED`, optional for `QUICK`, and not required for `ARCHIVE`.
 
-The local LLM is not authoritative. It cannot:
-
-- download media;
-- choose arbitrary commands, executable paths or arguments;
-- write directly to SQLite;
-- bypass MemoryGateway;
-- mark inferred claims as visually confirmed;
-- promote knowledge to reusable or canon state;
-- override human review.
-
-Deterministic code remains responsible for source safety, URL classification, hashes, artifact verification, timestamps, evidence identity, queue state, idempotency and canonical mutation envelopes.
-
-## Operations
+Ollama can be reached in two private runtime topologies:
 
 ```text
-video_understand_url
-video_import_urls
-video_process_one
-video_status
-video_doctor
-video_query
-video_reprocess
-video_attach_to_project
+loopback
+worker and Ollama on the same node → native /api/chat
+
+private_bridge
+HomeEdge worker → Skeleton-controlled private executor → server Ollama
 ```
 
-Operation payloads accept semantic inputs only. Shell commands, ffmpeg/yt-dlp arguments, output paths, selectors, model paths, cookies and credentials are rejected.
+The private bridge accepts only the bounded normalized synthesis packet. It does not accept an endpoint, shell command, executable path, cookies, arbitrary headers or raw media. Protected bridge registration is a separate deployment task.
 
-## Domain profiles
+The LLM is not trusted to classify URL safety, choose commands, calculate hashes, verify artifacts, perform canonical writes or promote knowledge. Cloud fallback is forbidden. Inferred facts must remain explicitly inferred, and visual claims require linked frame evidence.
 
-- DIOS
-- Home Automation
-- Travel
-- Construction
-- Legal/Documents
-- Aviation
-- Skeleton Architecture
-- General Knowledge
+## Domain routing
 
-A user-selected profile is recorded as an override. Original classifier candidates and evidence remain in the private record.
+The core ranks DIOS, Home Automation, Travel, Construction, Legal/Documents, Aviation, Skeleton Architecture and General Knowledge. An explicit user profile can select a profile, but original classifier candidates and evidence are retained.
 
-## Private record
-
-A complete private `VideoRecord` contains source identity, processing revision, domain candidates, ABOUT, STRUCTURE, workflows, topics, entities, claims, timestamped evidence, actions, conflicts, project links, review state, transcript artifacts, frame evidence and the verified artifact-manifest hash.
-
-Large media, audio and frame files remain in private artifact storage. MemoryGateway stores structured identity, relations and searchable knowledge.
-
-## Memory authority
-
-The only normal mutation contract is:
+## Private runtime order
 
 ```text
+source acquisition
+→ transcript/subtitle quality gate
+→ optional Sona fallback
+→ frames + OCR
+→ Ollama understanding
+→ artifact manifest/readback
+→ MemoryGateway canonical mutation
+→ optional projection
+```
+
+The provider layer uses fixed private configuration for `yt-dlp`, `ffmpeg`, `ffprobe`, Sona and OCR. Commands are argv-only with bounded timeout/output and owned process groups. YouTube/Vimeo use fixed yt-dlp profiles; direct media requires an allowlisted HTTPS host, pinned global DNS result, bounded redirects, content type and size; local files use opaque registry identities.
+
+The file queue supports atomic enqueue/claim, leases, heartbeat, retry, quarantine and expired-lease recovery. It is operational state only, not a canonical database. The artifact store promotes immutable results only after manifest/hash/readback verification.
+
+Projection failure never rolls back a successful canonical commit.
+
+## Memory and review
+
+Large media stays in private artifact storage. The adapter constructs the current private MemoryGateway request envelope:
+
+```text
+schema: skeleton.memory_gateway.request.v1
+namespace: skeleton
 command: skeleton.memory.private_mutate
-operation: put
-private_mode: true
-dataset: video_understanding
+payload.schema: skeleton.private_memory_gateway.mutation.v1
+payload.operation: put
+payload.dataset_id: video_understanding
 ```
 
-The fact key is stable for `video_record_id + processing_revision`. The idempotency key is stable for `source identity + manifest hash + processing revision`.
+Video modules do not import SQLite and do not create a second canonical database.
 
-The video module does not import `sqlite3`, accept a database path or create a second canonical database. Projection failures are recorded separately from the canonical mutation status.
+Knowledge transitions require explicit review:
 
-## Artifact manifest
+```text
+PROCESSED → UNDERSTOOD → PROJECT_LINKED → HUMAN_REVIEWED
+→ ACCEPTED_REUSABLE → PROMOTED
+```
 
-Manifest entries use relative identities and record private SHA-256, byte size, media type, producer and processing revision. Absolute paths, traversal, backslashes and duplicate identities are rejected. The manifest hash is deterministic.
-
-`ARCHIVE` retains verified source media. Other modes delete temporary source media only after artifact finalization and readback verification.
-
-## Public output
-
-Public receipts contain only operation, aggregate status/reason, mode, allowed domain class, artifact/evidence counts, review-required status and canonical/projection status categories.
-
-They do not contain URL, video ID, title, channel, transcript, evidence text, project identity, local path, frame identity or raw hash.
+Acceptance and promotion require separate human approvals.
 
 ## DIOS compatibility
 
-The existing DIOS runtime remains intact until a separately reviewed migration:
+The installed DIOS runtime, corpus and queue remain untouched until an operator-approved migration. Compatibility mapping is:
 
 ```text
-dios_video_doctor
-→ video_doctor(profile=DIOS)
-
-dios_video_status
-→ video_status(profile=DIOS)
-
-dios_video_process_one
-→ video_process_one(profile=DIOS)
+dios_video_doctor      → video_doctor(profile=DIOS)
+dios_video_status      → video_status(profile=DIOS)
+dios_video_process_one → video_process_one(profile=DIOS)
 ```
 
-No existing private DIOS queue, corpus or artifact is changed by Phase A.
+## Current source boundary
 
-## Phase A boundary
-
-This source phase defines and tests models, safety classification, routing, manifests, MemoryGateway envelopes, local Ollama synthesis contracts and operation plans. It performs no real network/media/model execution, live MemoryGateway mutation, HomeEdge installation or service activation.
+The source implementation contains the universal core, local provider contracts, queue, worker, artifact storage, Sona/Ollama transports and synthetic tests. It does not register protected operations, deploy to HomeEdge, process a real URL, enable a worker, import the DIOS corpus or merge itself.
