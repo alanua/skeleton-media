@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from typing import Any, Mapping
 
@@ -13,10 +14,7 @@ from core.video_understanding.models import (
     public_receipt,
     reject_unknown_fields,
 )
-from core.video_understanding.url_classifier import (
-    classify_local_reference,
-    classify_remote_url,
-)
+from core.video_understanding.url_classifier import classify_remote_url
 
 
 OPERATIONS = frozenset(
@@ -31,7 +29,7 @@ OPERATIONS = frozenset(
         "video_attach_to_project",
     }
 )
-
+_VIDEO_RECORD_ID_RE = re.compile(r"^vr_[A-Za-z0-9_-]{5,157}$")
 _FORBIDDEN_FIELDS = frozenset(
     {
         "shell",
@@ -51,7 +49,6 @@ _FORBIDDEN_FIELDS = frozenset(
         "headers",
     }
 )
-
 _ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "video_understand_url": frozenset({"url", "project_hint", "question", "mode", "depth", "profile"}),
     "video_import_urls": frozenset({"urls", "project_hint", "mode", "depth", "profile"}),
@@ -95,7 +92,7 @@ def plan_operation(operation: str, payload: Mapping[str, Any]) -> dict[str, Any]
 def _mode(payload: Mapping[str, Any], default: ProcessingMode = ProcessingMode.STANDARD) -> ProcessingMode:
     try:
         return ProcessingMode(payload.get("mode", default.value))
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise VideoUnderstandingError("INVALID_MODE", "processing mode is unsupported") from exc
 
 
@@ -105,7 +102,7 @@ def _profile(payload: Mapping[str, Any]) -> Domain | None:
         return None
     try:
         return Domain(raw)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise VideoUnderstandingError("UNKNOWN_PROFILE", "video profile is unsupported") from exc
 
 
@@ -118,7 +115,7 @@ def _depth(payload: Mapping[str, Any]) -> int:
 
 def _opaque_id(payload: Mapping[str, Any]) -> str:
     value = payload.get("video_record_id")
-    if not isinstance(value, str) or not value.startswith("vr_") or not 8 <= len(value) <= 160:
+    if not isinstance(value, str) or _VIDEO_RECORD_ID_RE.fullmatch(value) is None:
         raise VideoUnderstandingError("INVALID_VIDEO_RECORD_ID", "video_record_id is invalid")
     return value
 
