@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeleton.local/schemas/video_understanding_queue_record.schema.json",
+  "title": "Skeleton Video Understanding Private Queue Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "record_id", "idempotency_key", "operation", "payload", "state",
+    "attempts", "available_at", "lease_until", "worker_id", "reason_code",
+    "created_at", "updated_at"
+  ],
+  "properties": {
+    "schema": {"const": "skeleton.video_understanding.queue_record.v1"},
+    "record_id": {"type": "string", "pattern": "^job_[0-9a-f]{32}$"},
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "operation": {"type": "string", "minLength": 1, "maxLength": 128},
+    "payload": {"type": "object"},
+    "state": {"enum": ["pending", "processing", "done", "failed", "quarantined"]},
+    "attempts": {"type": "integer", "minimum": 0},
+    "available_at": {"type": "number"},
+    "lease_until": {"type": ["number", "null"]},
+    "worker_id": {"type": ["string", "null"], "maxLength": 128},
+    "reason_code": {"type": ["string", "null"], "maxLength": 128},
+    "created_at": {"type": "number"},
+    "updated_at": {"type": "number"}
+  }
+}
