@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeleton.local/schemas/video_understanding_receipt.schema.json",
+  "title": "Skeleton Video Understanding Public Receipt",
+  "type": "object",
+  "required": [
+    "schema",
+    "operation",
+    "status",
+    "reason_code",
+    "mode",
+    "transcript_count",
+    "frame_count",
+    "ocr_count",
+    "evidence_count",
+    "review_required",
+    "canonical_mutation_status",
+    "projection_status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "skeleton.video_understanding.receipt.v1"},
+    "operation": {"type": "string", "maxLength": 64},
+    "status": {"type": "string", "maxLength": 64},
+    "reason_code": {"type": "string", "maxLength": 128},
+    "mode": {"enum": ["QUICK", "STANDARD", "DEEP", "TARGETED", "ARCHIVE"]},
+    "detected_domain": {
+      "type": ["string", "null"],
+      "enum": [
+        "DIOS",
+        "HOME_AUTOMATION",
+        "TRAVEL",
+        "CONSTRUCTION",
+        "LEGAL_DOCUMENTS",
+        "AVIATION",
+        "SKELETON_ARCHITECTURE",
+        "GENERAL_KNOWLEDGE",
+        null
+      ]
+    },
+    "transcript_count": {"type": "integer", "minimum": 0},
+    "frame_count": {"type": "integer", "minimum": 0},
+    "ocr_count": {"type": "integer", "minimum": 0},
+    "evidence_count": {"type": "integer", "minimum": 0},
+    "review_required": {"type": "boolean"},
+    "canonical_mutation_status": {"type": "string", "maxLength": 64},
+    "projection_status": {"type": "string", "maxLength": 64}
+  }
+}
