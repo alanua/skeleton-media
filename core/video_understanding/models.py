@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Mapping, Sequence
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+_VIDEO_RECORD_ID_RE = re.compile(r"^vr_[A-Za-z0-9_-]{5,157}$")
 
 
 class VideoUnderstandingError(ValueError):
@@ -131,14 +137,49 @@ def _nonempty(value: str, field_name: str, *, max_length: int = 4096) -> str:
     return cleaned
 
 
+def _opaque_id(value: str, field_name: str) -> str:
+    cleaned = _nonempty(value, field_name, max_length=256)
+    if _OPAQUE_ID_RE.fullmatch(cleaned) is None:
+        raise VideoUnderstandingError("INVALID_IDENTITY", f"{field_name} is invalid")
+    return cleaned
+
+
+def _sha256(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise VideoUnderstandingError("INVALID_HASH", f"{field_name} must be SHA-256")
+    return value
+
+
+def _string_tuple(values: Sequence[str], field_name: str, *, max_items: int = 10_000) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or len(values) > max_items:
+        raise VideoUnderstandingError("INVALID_SEQUENCE", f"{field_name} is invalid")
+    return tuple(_nonempty(value, field_name, max_length=4096) for value in values)
+
+
 def _timestamp_range(start_seconds: float, end_seconds: float) -> tuple[float, float]:
     values = (start_seconds, end_seconds)
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in values):
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
         raise VideoUnderstandingError("INVALID_TIMESTAMP", "timestamps must be numeric")
     start, end = float(start_seconds), float(end_seconds)
     if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end < start:
         raise VideoUnderstandingError("INVALID_TIMESTAMP", "timestamp range is invalid")
     return start, end
+
+
+def _nonnegative_count(value: int, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise VideoUnderstandingError("INVALID_COUNT", f"{field_name} must be non-negative")
+    return value
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -152,6 +193,8 @@ class SourceReference:
         object.__setattr__(self, "source_type", _nonempty(self.source_type, "source_type", max_length=64))
         object.__setattr__(self, "private_identity", _nonempty(self.private_identity, "private_identity"))
         object.__setattr__(self, "adapter", _nonempty(self.adapter, "adapter", max_length=64))
+        if not isinstance(self.metadata, Mapping):
+            raise VideoUnderstandingError("INVALID_METADATA", "source metadata must be an object")
 
 
 @dataclass(frozen=True)
@@ -164,8 +207,12 @@ class TranscriptArtifact:
     text_sha256: str
 
     def __post_init__(self) -> None:
-        if self.segment_count < 0:
-            raise VideoUnderstandingError("INVALID_COUNT", "segment_count must be non-negative")
+        object.__setattr__(self, "artifact_id", _opaque_id(self.artifact_id, "artifact_id"))
+        object.__setattr__(self, "language", _nonempty(self.language, "language", max_length=32))
+        object.__setattr__(self, "provider", _nonempty(self.provider, "provider", max_length=128))
+        object.__setattr__(self, "quality_status", _nonempty(self.quality_status, "quality_status", max_length=64))
+        object.__setattr__(self, "segment_count", _nonnegative_count(self.segment_count, "segment_count"))
+        object.__setattr__(self, "text_sha256", _sha256(self.text_sha256, "text_sha256"))
 
 
 @dataclass(frozen=True)
@@ -177,9 +224,13 @@ class FrameEvidence:
     ocr_text: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "artifact_id", _opaque_id(self.artifact_id, "artifact_id"))
         start, _ = _timestamp_range(self.timestamp_seconds, self.timestamp_seconds)
         object.__setattr__(self, "timestamp_seconds", start)
+        object.__setattr__(self, "evidence_kind", _nonempty(self.evidence_kind, "evidence_kind", max_length=64))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
+        if self.ocr_text is not None:
+            object.__setattr__(self, "ocr_text", _nonempty(self.ocr_text, "ocr_text", max_length=100_000))
 
 
 @dataclass(frozen=True)
@@ -191,6 +242,7 @@ class Topic:
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _nonempty(self.name, "topic", max_length=256))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
+        object.__setattr__(self, "evidence_ids", _string_tuple(self.evidence_ids, "evidence_id"))
 
 
 @dataclass(frozen=True)
@@ -204,6 +256,7 @@ class Entity:
         object.__setattr__(self, "entity_type", _nonempty(self.entity_type, "entity_type", max_length=64))
         object.__setattr__(self, "name", _nonempty(self.name, "entity_name", max_length=512))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
+        object.__setattr__(self, "evidence_ids", _string_tuple(self.evidence_ids, "evidence_id"))
 
 
 @dataclass(frozen=True)
@@ -215,13 +268,13 @@ class Claim:
     confidence: float
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "claim_id", _opaque_id(self.claim_id, "claim_id"))
         object.__setattr__(self, "text", _nonempty(self.text, "claim_text"))
         object.__setattr__(self, "support_type", SupportType(self.support_type))
+        object.__setattr__(self, "evidence_ids", _string_tuple(self.evidence_ids, "evidence_id"))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
         if self.support_type is not SupportType.INFERRED and not self.evidence_ids:
-            raise VideoUnderstandingError(
-                "EVIDENCE_REQUIRED", "non-inferred claims require evidence"
-            )
+            raise VideoUnderstandingError("EVIDENCE_REQUIRED", "non-inferred claims require evidence")
 
 
 @dataclass(frozen=True)
@@ -233,6 +286,10 @@ class Workflow:
     confidence: float
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "workflow_id", _opaque_id(self.workflow_id, "workflow_id"))
+        object.__setattr__(self, "name", _nonempty(self.name, "workflow_name", max_length=512))
+        object.__setattr__(self, "ordered_steps", _string_tuple(self.ordered_steps, "workflow_step"))
+        object.__setattr__(self, "evidence_ids", _string_tuple(self.evidence_ids, "evidence_id"))
         if not self.ordered_steps:
             raise VideoUnderstandingError("WORKFLOW_STEPS_REQUIRED", "workflow requires steps")
         object.__setattr__(self, "confidence", _confidence(self.confidence))
@@ -249,10 +306,15 @@ class TimestampedEvidence:
     private_excerpt: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_id", _opaque_id(self.evidence_id, "evidence_id"))
+        object.__setattr__(self, "artifact_id", _opaque_id(self.artifact_id, "artifact_id"))
         start, end = _timestamp_range(self.start_seconds, self.end_seconds)
         object.__setattr__(self, "start_seconds", start)
         object.__setattr__(self, "end_seconds", end)
+        object.__setattr__(self, "evidence_kind", _nonempty(self.evidence_kind, "evidence_kind", max_length=64))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
+        if self.private_excerpt is not None:
+            object.__setattr__(self, "private_excerpt", _nonempty(self.private_excerpt, "private_excerpt", max_length=20_000))
 
 
 @dataclass(frozen=True)
@@ -263,7 +325,11 @@ class ProjectLink:
     operator_selected: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "project_id", _opaque_id(self.project_id, "project_id"))
+        object.__setattr__(self, "relation", _nonempty(self.relation, "relation", max_length=64))
         object.__setattr__(self, "confidence", _confidence(self.confidence))
+        if not isinstance(self.operator_selected, bool):
+            raise VideoUnderstandingError("INVALID_BOOLEAN", "operator_selected must be boolean")
 
 
 @dataclass(frozen=True)
@@ -275,10 +341,14 @@ class ReviewDecision:
     promoted: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "status", _nonempty(self.status, "review_status", max_length=64))
+        object.__setattr__(self, "reviewer_type", _nonempty(self.reviewer_type, "reviewer_type", max_length=64))
+        object.__setattr__(self, "reason_codes", _string_tuple(self.reason_codes, "reason_code"))
+        if not isinstance(self.accepted_reusable, bool) or not isinstance(self.promoted, bool):
+            raise VideoUnderstandingError("INVALID_BOOLEAN", "review flags must be boolean")
         if self.promoted and not self.accepted_reusable:
             raise VideoUnderstandingError(
-                "INVALID_REVIEW_DECISION",
-                "promoted knowledge must first be accepted as reusable",
+                "INVALID_REVIEW_DECISION", "promoted knowledge must first be accepted as reusable"
             )
 
 
@@ -293,17 +363,20 @@ class VideoRequest:
     profile: Domain | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "operation", _nonempty(self.operation, "operation", max_length=64))
         object.__setattr__(self, "mode", ProcessingMode(self.mode))
         if self.profile is not None:
             object.__setattr__(self, "profile", Domain(self.profile))
-        if not 1 <= self.depth <= 3:
-            raise VideoUnderstandingError("INVALID_DEPTH", "depth must be between 1 and 3")
+        if isinstance(self.depth, bool) or not isinstance(self.depth, int) or not 1 <= self.depth <= 3:
+            raise VideoUnderstandingError("INVALID_DEPTH", "depth must be an integer between 1 and 3")
+        if self.source is not None:
+            object.__setattr__(self, "source", _nonempty(self.source, "source"))
+        if self.project_hint is not None:
+            object.__setattr__(self, "project_hint", _nonempty(self.project_hint, "project_hint", max_length=256))
         if self.question is not None:
             object.__setattr__(self, "question", _nonempty(self.question, "question", max_length=4000))
         if self.mode is ProcessingMode.TARGETED and self.question is None:
-            raise VideoUnderstandingError(
-                "QUESTION_REQUIRED", "TARGETED mode requires a question"
-            )
+            raise VideoUnderstandingError("QUESTION_REQUIRED", "TARGETED mode requires a question")
 
 
 @dataclass(frozen=True)
@@ -332,22 +405,39 @@ class VideoRecord:
     frame_evidence: tuple[FrameEvidence, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.schema != "skeleton.video_understanding.record.v1":
+            raise VideoUnderstandingError("INVALID_SCHEMA", "video record schema is invalid")
+        if _VIDEO_RECORD_ID_RE.fullmatch(self.video_record_id) is None:
+            raise VideoUnderstandingError("INVALID_VIDEO_RECORD_ID", "video_record_id is invalid")
+        object.__setattr__(self, "processing_revision", _nonempty(self.processing_revision, "processing_revision", max_length=128))
         object.__setattr__(self, "state", ProcessingState(self.state))
         object.__setattr__(self, "mode", ProcessingMode(self.mode))
         object.__setattr__(self, "detected_domain", Domain(self.detected_domain))
+        object.__setattr__(self, "artifact_manifest_hash", _sha256(self.artifact_manifest_hash, "artifact_manifest_hash"))
+        if not isinstance(self.source, SourceReference) or not isinstance(self.review, ReviewDecision):
+            raise VideoUnderstandingError("INVALID_RECORD_COMPONENT", "record components are invalid")
+        for field_name, values in (
+            ("domain_candidates", self.domain_candidates),
+            ("structure", self.structure),
+            ("actions", self.actions),
+            ("conflicts", self.conflicts),
+        ):
+            if not isinstance(values, tuple) or any(not isinstance(item, Mapping) for item in values):
+                raise VideoUnderstandingError("INVALID_RECORD_COMPONENT", f"{field_name} is invalid")
+        if not isinstance(self.about, Mapping):
+            raise VideoUnderstandingError("INVALID_RECORD_COMPONENT", "about is invalid")
         if self.review.promoted and self.state is not ProcessingState.PROMOTED:
+            raise VideoUnderstandingError("STATE_REVIEW_MISMATCH", "promoted review requires PROMOTED state")
+        if self.review.accepted_reusable and self.state not in {
+            ProcessingState.ACCEPTED_REUSABLE,
+            ProcessingState.PROMOTED,
+        }:
             raise VideoUnderstandingError(
-                "STATE_REVIEW_MISMATCH", "promoted review requires PROMOTED state"
+                "STATE_REVIEW_MISMATCH", "accepted reusable review requires matching state"
             )
 
     def to_private_value(self) -> dict[str, Any]:
-        value = asdict(self)
-        value["state"] = self.state.value
-        value["mode"] = self.mode.value
-        value["detected_domain"] = self.detected_domain.value
-        for claim in value["claims"]:
-            claim["support_type"] = claim["support_type"].value
-        return value
+        return _jsonable(asdict(self))
 
 
 def public_receipt(
@@ -365,9 +455,11 @@ def public_receipt(
     canonical_mutation_status: str = "NOT_ATTEMPTED",
     projection_status: str = "NOT_ATTEMPTED",
 ) -> dict[str, Any]:
-    values = (transcript_count, frame_count, ocr_count, evidence_count)
-    if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in values):
+    counts = (transcript_count, frame_count, ocr_count, evidence_count)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
         raise VideoUnderstandingError("INVALID_COUNT", "receipt counts must be non-negative integers")
+    if not isinstance(review_required, bool):
+        raise VideoUnderstandingError("INVALID_BOOLEAN", "review_required must be boolean")
     return {
         "schema": "skeleton.video_understanding.receipt.v1",
         "operation": _nonempty(operation, "operation", max_length=64),
@@ -379,9 +471,11 @@ def public_receipt(
         "frame_count": frame_count,
         "ocr_count": ocr_count,
         "evidence_count": evidence_count,
-        "review_required": bool(review_required),
-        "canonical_mutation_status": canonical_mutation_status,
-        "projection_status": projection_status,
+        "review_required": review_required,
+        "canonical_mutation_status": _nonempty(
+            canonical_mutation_status, "canonical_mutation_status", max_length=64
+        ),
+        "projection_status": _nonempty(projection_status, "projection_status", max_length=64),
     }
 
 
