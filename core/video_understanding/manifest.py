@@ -11,6 +11,7 @@ from core.video_understanding.models import ProcessingMode, VideoUnderstandingEr
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
 
 @dataclass(frozen=True)
@@ -24,12 +25,21 @@ class ArtifactEntry:
     processing_revision: str
 
     def __post_init__(self) -> None:
+        if _ID_RE.fullmatch(self.artifact_id) is None:
+            raise VideoUnderstandingError("INVALID_ARTIFACT_ID", "artifact identity is invalid")
         normalized = validate_relative_artifact_path(self.relative_path)
         object.__setattr__(self, "relative_path", normalized)
         if _SHA256_RE.fullmatch(self.sha256) is None:
             raise VideoUnderstandingError("INVALID_ARTIFACT_HASH", "artifact hash is invalid")
         if isinstance(self.byte_size, bool) or not isinstance(self.byte_size, int) or self.byte_size < 0:
             raise VideoUnderstandingError("INVALID_ARTIFACT_SIZE", "artifact size is invalid")
+        for field_name, value, maximum in (
+            ("media_type", self.media_type, 256),
+            ("producer", self.producer, 256),
+            ("processing_revision", self.processing_revision, 128),
+        ):
+            if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+                raise VideoUnderstandingError("INVALID_ARTIFACT_FIELD", f"{field_name} is invalid")
 
 
 @dataclass(frozen=True)
@@ -71,13 +81,19 @@ class ArtifactManifest:
 
 
 def validate_relative_artifact_path(value: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or "\x00" in value
+        or "//" in value
+    ):
         raise VideoUnderstandingError("INVALID_ARTIFACT_PATH", "artifact path is invalid")
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise VideoUnderstandingError("INVALID_ARTIFACT_PATH", "artifact path must be relative")
     normalized = path.as_posix()
-    if normalized.startswith("/") or "//" in normalized:
+    if normalized.startswith("/"):
         raise VideoUnderstandingError("INVALID_ARTIFACT_PATH", "artifact path is unsafe")
     return normalized
 
@@ -86,22 +102,24 @@ def verify_inventory(
     manifest: ArtifactManifest,
     inventory: Mapping[str, tuple[str, int]],
 ) -> dict[str, object]:
-    missing = 0
+    expected_paths = {entry.relative_path for entry in manifest.entries}
+    observed_paths = set(inventory)
+    missing_paths = expected_paths - observed_paths
+    unexpected_paths = observed_paths - expected_paths
     mismatched = 0
     for entry in manifest.entries:
         observed = inventory.get(entry.relative_path)
         if observed is None:
-            missing += 1
             continue
         observed_hash, observed_size = observed
         if observed_hash != entry.sha256 or observed_size != entry.byte_size:
             mismatched += 1
     return {
-        "verified": missing == 0 and mismatched == 0 and len(inventory) == len(manifest.entries),
+        "verified": not missing_paths and not unexpected_paths and mismatched == 0,
         "entry_count": len(manifest.entries),
-        "missing_count": missing,
+        "missing_count": len(missing_paths),
         "mismatched_count": mismatched,
-        "unexpected_count": max(0, len(inventory) - len(manifest.entries)),
+        "unexpected_count": len(unexpected_paths),
     }
 
 
