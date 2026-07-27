@@ -35,9 +35,10 @@ def test_understand_url_returns_private_plan_and_sanitized_receipt() -> None:
     assert private_plan["canonical_mutation"] == "MEMORY_GATEWAY_ONLY"
     assert private_plan["network_execution"] is False
     serialized_public = repr(public)
-    assert "youtu" not in serialized_public.casefold()
+    assert "https://youtu.be/AbCdEf12345" not in serialized_public
     assert "AbCdEf12345" not in serialized_public
     assert "Skeleton Architecture" not in serialized_public
+    assert public["reason_code"] == "SUPPORTED_YOUTUBE"
 
 
 def test_targeted_mode_requires_question() -> None:
@@ -77,6 +78,12 @@ def test_unknown_fields_and_unbounded_batch_are_rejected() -> None:
     with pytest.raises(VideoUnderstandingError) as batch:
         plan_operation("video_import_urls", {"urls": ["https://vimeo.com/123456"] * 101})
     assert batch.value.reason_code == "INVALID_BATCH"
+
+
+def test_path_like_video_record_identity_is_rejected() -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        plan_operation("video_status", {"video_record_id": "vr_../../private"})
+    assert exc.value.reason_code == "INVALID_VIDEO_RECORD_ID"
 
 
 def test_doctor_checks_ollama_and_sona_without_running_them() -> None:
