@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from core.memory_gateway import MemoryGateway, capability_token
+from core.memory_gateway_storage import PrivateMemoryGatewayStorage
 from core.video_understanding.memory_gateway_adapter import (
     build_private_mutation,
     canonical_request_fingerprint,
@@ -69,6 +72,40 @@ def test_memory_gateway_envelope_matches_current_main_contract() -> None:
     assert payload["value"]["about"]["summary"] == "synthetic private summary"
     assert payload["value"]["state"] == "UNDERSTOOD"
     assert payload["value"]["mode"] == "STANDARD"
+
+
+def test_payload_passes_current_storage_normalization(tmp_path: Path) -> None:
+    stack = SimpleNamespace(
+        paths=SimpleNamespace(root=tmp_path, db=tmp_path / "canonical.sqlite3")
+    )
+    storage = PrivateMemoryGatewayStorage(stack)
+    envelope = build_private_mutation(_record(), approval_ref=APPROVAL_REF)
+    normalized = storage._normalize_payload(envelope["payload"])
+    assert normalized["operation"] == "put"
+    assert normalized["project_id"] == "skeleton"
+    assert normalized["dataset_id"] == "video_understanding"
+    assert normalized["canonical_ref"].startswith("video_understanding:video:")
+    assert normalized["source_hash"] == MANIFEST_HASH
+
+
+def test_envelope_passes_current_memory_gateway_dispatch() -> None:
+    captured = {}
+
+    class Storage:
+        def execute_mutation(self, payload):
+            captured.update(payload)
+            return {"status": "DONE", "aggregate_counts": {"mutation_count": 1}}
+
+    gateway = MemoryGateway(
+        capability_token(namespaces=("skeleton",), public_mode=False),
+        private_memory_storage=Storage(),
+    )
+    response = gateway.execute(
+        build_private_mutation(_record(), approval_ref=APPROVAL_REF)
+    )
+    assert captured["schema"] == "skeleton.private_memory_gateway.mutation.v1"
+    assert captured["dataset_id"] == "video_understanding"
+    assert response["command"] == "skeleton.memory.private_mutate"
 
 
 def test_identical_replay_has_identical_identity_and_revision_changes_it() -> None:
