@@ -55,7 +55,7 @@ def test_timestamp_evidence_rejects_reverse_range() -> None:
     assert exc.value.reason_code == "INVALID_TIMESTAMP"
 
 
-def test_public_receipt_has_no_private_fields() -> None:
+def test_public_receipt_has_no_private_values() -> None:
     receipt = public_receipt(
         operation="video_understand_url",
         status="PLANNED",
@@ -66,6 +66,13 @@ def test_public_receipt_has_no_private_fields() -> None:
         ocr_count=1,
         evidence_count=3,
     )
-    serialized = repr(receipt).casefold()
-    for marker in ("url", "title", "transcript", "path", "sha256", "video_id", "project_id"):
-        assert marker not in serialized
+    serialized = repr(receipt)
+    for private_value in (
+        "https://youtu.be/AbCdEf12345",
+        "AbCdEf12345",
+        "/home/private/video.mp4",
+        "private transcript text",
+        "project-secret",
+        "a" * 64,
+    ):
+        assert private_value not in serialized
