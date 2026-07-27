@@ -26,6 +26,7 @@ _FORBIDDEN_HOSTS = {
     "metadata",
 }
 _FORBIDDEN_SUFFIXES = (".local", ".internal", ".localhost", ".home", ".lan")
+_OBFUSCATED_IP_RE = re.compile(r"^(?:0x[0-9a-f]+|[0-9a-fx.]+)$", re.IGNORECASE)
 _YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 _VIMEO_ID_RE = re.compile(r"^[0-9]{3,20}$")
 
@@ -50,6 +51,8 @@ def _reject_host(host: str) -> None:
     try:
         address = ipaddress.ip_address(normalized.strip("[]"))
     except ValueError:
+        if _OBFUSCATED_IP_RE.fullmatch(normalized) and any(character.isdigit() for character in normalized):
+            raise VideoUnderstandingError("UNSAFE_TARGET", "obfuscated numeric host is not allowed")
         return
     if not address.is_global:
         raise VideoUnderstandingError("UNSAFE_TARGET", "non-global IP target is not allowed")
