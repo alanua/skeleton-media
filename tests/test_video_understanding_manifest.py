@@ -55,7 +55,10 @@ def test_archive_mode_retains_source_and_standard_cleans_temp() -> None:
     assert standard.source_retention == "DELETE_TEMP_AFTER_VERIFY"
 
 
-@pytest.mark.parametrize("path", ["/absolute/file", "../escape", "frames/../../escape", r"frames\\x.png"])
+@pytest.mark.parametrize(
+    "path",
+    ["/absolute/file", "../escape", "frames/../../escape", r"frames\\x.png", "frames//x.png"],
+)
 def test_manifest_rejects_unsafe_paths(path: str) -> None:
     with pytest.raises(VideoUnderstandingError):
         _entry("a", path)
@@ -88,3 +91,16 @@ def test_inventory_verification_returns_counts_only() -> None:
         "unexpected_count": 0,
     }
     assert HASH_A not in repr(result)
+
+
+def test_inventory_counts_missing_and_unexpected_independently() -> None:
+    manifest = build_manifest(
+        video_record_id="vr_example",
+        processing_revision="r1",
+        mode="STANDARD",
+        entries=[_entry("a", "metadata.json")],
+    )
+    result = verify_inventory(manifest, {"unexpected.json": (HASH_B, 12)})
+    assert result["verified"] is False
+    assert result["missing_count"] == 1
+    assert result["unexpected_count"] == 1
