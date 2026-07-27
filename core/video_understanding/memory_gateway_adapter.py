@@ -31,6 +31,16 @@ def _safe_token(value: str, field_name: str) -> str:
     return value
 
 
+def _validate_json_value(value: Any) -> None:
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise VideoUnderstandingError(
+            "PRIVATE_VALUE_NOT_JSON",
+            "private video record must be strict JSON",
+        ) from exc
+
+
 def build_private_mutation(
     record: VideoRecord,
     *,
@@ -69,6 +79,7 @@ def build_private_mutation(
         "review_status": record.review.status,
         "source_identity": record.source.private_identity,
     }
+    _validate_json_value(value)
     payload = {
         "schema": PRIVATE_MUTATION_SCHEMA,
         "operation": "put",
@@ -84,14 +95,28 @@ def build_private_mutation(
         "source_hash": effective_manifest_hash,
         "idempotency_key": idempotency_key,
     }
-    return {
+    envelope = {
         "schema": GATEWAY_REQUEST_SCHEMA,
         "namespace": NAMESPACE,
         "command": COMMAND,
         "payload": payload,
     }
+    _validate_json_value(envelope)
+    return envelope
 
 
 def canonical_request_fingerprint(envelope: dict[str, Any]) -> str:
-    encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    try:
+        encoded = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise VideoUnderstandingError(
+            "PRIVATE_VALUE_NOT_JSON",
+            "mutation envelope must be strict JSON",
+        ) from exc
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
