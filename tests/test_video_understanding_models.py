@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from core.video_understanding.models import (
@@ -76,3 +79,17 @@ def test_public_receipt_has_no_private_values() -> None:
         "a" * 64,
     ):
         assert private_value not in serialized
+
+
+def test_all_video_schemas_parse_and_reject_root_unknown_fields() -> None:
+    names = (
+        "video_understanding_request.schema.json",
+        "video_understanding_record.schema.json",
+        "video_understanding_receipt.schema.json",
+    )
+    for name in names:
+        schema = json.loads((Path("schemas") / name).read_text())
+        assert schema["type"] == "object"
+        assert schema["additionalProperties"] is False
+    request = json.loads((Path("schemas") / names[0]).read_text())
+    assert request["properties"]["payload"]["additionalProperties"] is False
