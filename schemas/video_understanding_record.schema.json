@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeleton.local/schemas/video_understanding_record.schema.json",
+  "title": "Skeleton Private Video Understanding Record",
+  "type": "object",
+  "required": [
+    "schema",
+    "video_record_id",
+    "processing_revision",
+    "state",
+    "mode",
+    "source",
+    "detected_domain",
+    "domain_candidates",
+    "about",
+    "structure",
+    "methods",
+    "topics",
+    "entities",
+    "claims",
+    "evidence",
+    "actions",
+    "conflicts",
+    "project_links",
+    "review",
+    "artifact_manifest_hash",
+    "transcript_artifacts",
+    "frame_evidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "skeleton.video_understanding.record.v1"},
+    "video_record_id": {"type": "string", "pattern": "^vr_[A-Za-z0-9_-]{5,157}$"},
+    "processing_revision": {"type": "string", "minLength": 1, "maxLength": 128},
+    "state": {
+      "enum": [
+        "QUEUED", "PROCESSING", "PROCESSED", "UNDERSTOOD", "PROJECT_LINKED",
+        "REVIEW_REQUIRED", "HUMAN_REVIEWED", "ACCEPTED_REUSABLE", "PROMOTED",
+        "FAILED", "QUARANTINED"
+      ]
+    },
+    "mode": {"enum": ["QUICK", "STANDARD", "DEEP", "TARGETED", "ARCHIVE"]},
+    "source": {
+      "type": "object",
+      "required": ["source_type", "private_identity", "adapter", "metadata"],
+      "additionalProperties": false,
+      "properties": {
+        "source_type": {"type": "string", "maxLength": 64},
+        "private_identity": {"type": "string", "maxLength": 4096},
+        "adapter": {"type": "string", "maxLength": 64},
+        "metadata": {"type": "object"}
+      }
+    },
+    "detected_domain": {
+      "enum": [
+        "DIOS", "HOME_AUTOMATION", "TRAVEL", "CONSTRUCTION", "LEGAL_DOCUMENTS",
+        "AVIATION", "SKELETON_ARCHITECTURE", "GENERAL_KNOWLEDGE"
+      ]
+    },
+    "domain_candidates": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
+    "about": {"type": "object"},
+    "structure": {"type": "array", "items": {"type": "object"}},
+    "methods": {"type": "array", "items": {"type": "object"}},
+    "topics": {"type": "array", "items": {"type": "object"}},
+    "entities": {"type": "array", "items": {"type": "object"}},
+    "claims": {"type": "array", "items": {"type": "object"}},
+    "evidence": {"type": "array", "items": {"type": "object"}},
+    "actions": {"type": "array", "items": {"type": "object"}},
+    "conflicts": {"type": "array", "items": {"type": "object"}},
+    "project_links": {"type": "array", "items": {"type": "object"}},
+    "review": {
+      "type": "object",
+      "required": ["status", "reviewer_type", "reason_codes", "accepted_reusable", "promoted"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"type": "string"},
+        "reviewer_type": {"type": "string"},
+        "reason_codes": {"type": "array", "items": {"type": "string"}},
+        "accepted_reusable": {"type": "boolean"},
+        "promoted": {"type": "boolean"}
+      }
+    },
+    "artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "transcript_artifacts": {"type": "array", "items": {"type": "object"}},
+    "frame_evidence": {"type": "array", "items": {"type": "object"}}
+  }
+}
