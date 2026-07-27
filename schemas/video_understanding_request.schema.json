@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeleton.local/schemas/video_understanding_request.schema.json",
+  "title": "Skeleton Video Understanding Request",
+  "type": "object",
+  "required": ["operation", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "enum": [
+        "video_understand_url",
+        "video_import_urls",
+        "video_process_one",
+        "video_status",
+        "video_doctor",
+        "video_query",
+        "video_reprocess",
+        "video_attach_to_project"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "maxProperties": 8,
+      "propertyNames": {
+        "not": {
+          "enum": [
+            "shell",
+            "command",
+            "ffmpeg_args",
+            "ffprobe_args",
+            "yt_dlp_args",
+            "output_path",
+            "browser_selector",
+            "executable_path",
+            "model_path",
+            "cookie",
+            "cookies",
+            "credential",
+            "credentials",
+            "api_key",
+            "headers"
+          ]
+        }
+      },
+      "properties": {
+        "url": {"type": "string", "maxLength": 4096},
+        "urls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 4096}
+        },
+        "video_record_id": {"type": "string", "pattern": "^vr_[A-Za-z0-9_-]{5,157}$"},
+        "project_hint": {"type": "string", "minLength": 1, "maxLength": 256},
+        "question": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "mode": {"enum": ["QUICK", "STANDARD", "DEEP", "TARGETED", "ARCHIVE"]},
+        "depth": {"type": "integer", "minimum": 1, "maximum": 3},
+        "profile": {
+          "enum": [
+            "DIOS",
+            "HOME_AUTOMATION",
+            "TRAVEL",
+            "CONSTRUCTION",
+            "LEGAL_DOCUMENTS",
+            "AVIATION",
+            "SKELETON_ARCHITECTURE",
+            "GENERAL_KNOWLEDGE"
+          ]
+        },
+        "relation": {"enum": ["related_to", "supports", "implements", "contradicts"]}
+      }
+    }
+  }
+}
