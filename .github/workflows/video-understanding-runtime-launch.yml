@@ -48,7 +48,8 @@ jobs:
           test "${GITHUB_REPOSITORY}" = "alanua/Skeleton"
           test "${GITHUB_REF}" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          test "$(git rev-parse --abbrev-ref HEAD)" = "HEAD"
+          checkout_ref="$(git rev-parse --abbrev-ref HEAD)"
+          test "${checkout_ref}" = "HEAD" || test "${checkout_ref}" = "main"
           origin="$(git remote get-url origin)"
           test "${origin}" = "https://github.com/alanua/Skeleton" || \
             test "${origin}" = "https://github.com/alanua/Skeleton.git"
