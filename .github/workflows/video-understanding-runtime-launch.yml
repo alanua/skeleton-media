@@ -1,0 +1,146 @@
+name: Video Understanding Runtime Launch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/video-understanding-runtime-launch.yml"
+      - "core/video_understanding/live_runtime.py"
+      - "core/video_understanding/runtime_install.py"
+      - "scripts/install_video_understanding_runtime.py"
+      - "scripts/video_understanding_worker.py"
+      - "tests/test_video_understanding_live_runtime.py"
+      - "tests/test_video_understanding_runtime_install.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skeleton-video-understanding-runtime-launch
+  cancel-in-progress: false
+
+jobs:
+  validate-and-launch:
+    name: Validate and launch exact main
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - hetzner-agent-runner-1
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Verify exact main identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse --abbrev-ref HEAD)" = "HEAD" || test "${GITHUB_REF_NAME}" = "main"
+          test "$(git remote get-url origin)" = "https://github.com/alanua/Skeleton"
+
+      - name: Validate Video Understanding suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q tests/test_video_understanding_*.py
+          python3 -m py_compile core/video_understanding/*.py scripts/video_understanding.py scripts/video_understanding_worker.py scripts/install_video_understanding_runtime.py
+
+      - name: Restore clean exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard "${GITHUB_SHA}"
+          git clean -fdx
+          test -z "$(git status --porcelain)"
+
+      - name: Install and activate private runtime
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="${RUNNER_TEMP}/video-understanding-install-receipt.json"
+          python3 scripts/install_video_understanding_runtime.py \
+            --expected-sha "${GITHUB_SHA}" \
+            --enable > "${receipt}"
+          python3 - "${receipt}" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          required = {
+              "source_merge_sha",
+              "runtime_config_status",
+              "provider_ready_count",
+              "provider_required_count",
+              "ollama_status",
+              "sona_status",
+              "artifact_store_status",
+              "queue_recovery_status",
+              "memory_gateway_status",
+              "memory_roundtrip_status",
+              "service_install_status",
+              "service_active",
+              "worker_count",
+              "rollback_ready",
+              "stable_reason_codes",
+          }
+          if set(payload) - (required | {"schema"}):
+              raise SystemExit("unexpected public receipt field")
+          if payload.get("source_merge_sha") != __import__("os").environ["GITHUB_SHA"]:
+              raise SystemExit("source SHA mismatch")
+          if payload.get("runtime_config_status") != "READY":
+              raise SystemExit("runtime config blocked")
+          if payload.get("provider_ready_count") != payload.get("provider_required_count"):
+              raise SystemExit("mandatory provider blocked")
+          if payload.get("ollama_status") != "READY":
+              raise SystemExit("Ollama blocked")
+          if payload.get("memory_gateway_status") != "READY":
+              raise SystemExit("MemoryGateway blocked")
+          if payload.get("memory_roundtrip_status") != "DONE":
+              raise SystemExit("MemoryGateway roundtrip blocked")
+          if payload.get("service_active") is not True or payload.get("worker_count") != 1:
+              raise SystemExit("worker activation failed")
+          if payload.get("rollback_ready") is not True:
+              raise SystemExit("rollback unavailable")
+          public = {
+              "source_merge_sha": payload["source_merge_sha"],
+              "runtime_config_status": payload["runtime_config_status"],
+              "provider_ready_count": payload["provider_ready_count"],
+              "provider_required_count": payload["provider_required_count"],
+              "ollama_status": payload["ollama_status"],
+              "sona_status": payload["sona_status"],
+              "artifact_store_status": payload["artifact_store_status"],
+              "queue_recovery_status": payload["queue_recovery_status"],
+              "memory_gateway_status": payload["memory_gateway_status"],
+              "memory_roundtrip_status": payload["memory_roundtrip_status"],
+              "service_install_status": payload["service_install_status"],
+              "service_active": payload["service_active"],
+              "worker_count": payload["worker_count"],
+              "rollback_ready": payload["rollback_ready"],
+              "stable_reason_codes": payload["stable_reason_codes"],
+          }
+          print(json.dumps(public, sort_keys=True))
+          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("## Skeleton Video Understanding runtime\n\n")
+              for key, value in public.items():
+                  handle.write(f"- `{key}`: `{value}`\n")
+          PY
+
+      - name: Verify active worker remains singular
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(systemctl --user is-active skeleton-video-understanding-worker.service)" = "active"
+          main_pid="$(systemctl --user show skeleton-video-understanding-worker.service --property=MainPID --value)"
+          test "${main_pid}" -gt 0
