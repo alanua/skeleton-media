@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -74,3 +75,10 @@ def test_runtime_config_json_load_and_unknown_field_rejection(tmp_path: Path) ->
     with pytest.raises(VideoUnderstandingError) as exc:
         load_runtime_config(path)
     assert exc.value.reason_code == "UNKNOWN_RUNTIME_CONFIG_FIELD"
+
+
+def test_video_understanding_extra_pins_pillow() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["optional-dependencies"]["video-understanding"] == [
+        "pillow==12.2.0"
+    ]
