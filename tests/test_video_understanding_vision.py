@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+import pytest
 
 from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
 from core.video_understanding.subprocess_tools import CommandResult
@@ -38,6 +38,7 @@ def test_frame_selection_is_deterministic_and_bounded() -> None:
 
 
 def test_perceptual_dedup_and_ocr_evidence(tmp_path: Path) -> None:
+    Image = pytest.importorskip("PIL.Image")
     cfg = config(tmp_path); workspace = tmp_path / "ws"; frames = workspace / "frames"; frames.mkdir(parents=True)
     first = frames / "a.png"; second = frames / "b.png"; third = frames / "c.png"
     Image.new("RGB", (8, 8), (10, 10, 10)).save(first)
