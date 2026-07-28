@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from PIL import Image
-
 from core.video_understanding.models import ProcessingMode, VideoUnderstandingError
 from core.video_understanding.runtime_config import VideoRuntimeConfig
 from core.video_understanding.subprocess_tools import BoundedCommandRunner, CommandRequest
@@ -229,6 +227,13 @@ def run_ocr(
 
 
 def average_hash(path: Path, *, size: int = 8) -> int:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise VideoUnderstandingError(
+            "VISION_DEPENDENCY_MISSING",
+            "video vision requires the video-understanding optional dependency",
+        ) from exc
     try:
         with Image.open(path) as image:
             grayscale = image.convert("L").resize((size, size))
