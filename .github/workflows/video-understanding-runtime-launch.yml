@@ -24,6 +24,7 @@ concurrency:
 jobs:
   validate-and-launch:
     name: Validate and launch exact main
+    if: github.repository == 'alanua/Skeleton' && github.ref == 'refs/heads/main'
     runs-on:
       - self-hosted
       - linux
@@ -35,7 +36,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           clean: true
@@ -44,9 +45,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "alanua/Skeleton"
+          test "${GITHUB_REF}" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          test "$(git rev-parse --abbrev-ref HEAD)" = "HEAD" || test "${GITHUB_REF_NAME}" = "main"
-          test "$(git remote get-url origin)" = "https://github.com/alanua/Skeleton"
+          test "$(git rev-parse --abbrev-ref HEAD)" = "HEAD"
+          origin="$(git remote get-url origin)"
+          test "${origin}" = "https://github.com/alanua/Skeleton" || \
+            test "${origin}" = "https://github.com/alanua/Skeleton.git"
 
       - name: Validate Video Understanding suite
         shell: bash
@@ -74,6 +79,7 @@ jobs:
             --enable > "${receipt}"
           python3 - "${receipt}" <<'PY'
           import json
+          import os
           import pathlib
           import sys
 
@@ -97,7 +103,7 @@ jobs:
           }
           if set(payload) - (required | {"schema"}):
               raise SystemExit("unexpected public receipt field")
-          if payload.get("source_merge_sha") != __import__("os").environ["GITHUB_SHA"]:
+          if payload.get("source_merge_sha") != os.environ["GITHUB_SHA"]:
               raise SystemExit("source SHA mismatch")
           if payload.get("runtime_config_status") != "READY":
               raise SystemExit("runtime config blocked")
@@ -131,7 +137,7 @@ jobs:
               "stable_reason_codes": payload["stable_reason_codes"],
           }
           print(json.dumps(public, sort_keys=True))
-          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
               handle.write("## Skeleton Video Understanding runtime\n\n")
               for key, value in public.items():
                   handle.write(f"- `{key}`: `{value}`\n")
