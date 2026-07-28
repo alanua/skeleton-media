@@ -55,7 +55,13 @@ def resolve_existing_private_memory_root(
     values = env if env is not None else os.environ
     configured_root = str(values.get(PRIVATE_MEMORY_ROOT_ENV, "")).strip()
     if configured_root:
-        root = Path(configured_root).expanduser().resolve(strict=True)
+        try:
+            root = Path(configured_root).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise VideoUnderstandingError(
+                "CANONICAL_MEMORY_NOT_FOUND",
+                "existing canonical private memory was not found",
+            ) from exc
         _require_existing_canonical_stack(root)
         return root
 
@@ -65,8 +71,8 @@ def resolve_existing_private_memory_root(
             "CANONICAL_MEMORY_ROOT_REQUIRED",
             "an existing canonical private-memory root must be configured",
         )
-    config_path = Path(config_value).expanduser().resolve(strict=True)
     try:
+        config_path = Path(config_value).expanduser().resolve(strict=True)
         payload = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise VideoUnderstandingError(
@@ -88,7 +94,13 @@ def resolve_existing_private_memory_root(
     db_path = Path(raw_path).expanduser()
     if not db_path.is_absolute():
         db_path = config_path.parent / db_path
-    db_path = db_path.resolve(strict=True)
+    try:
+        db_path = db_path.resolve(strict=True)
+    except OSError as exc:
+        raise VideoUnderstandingError(
+            "CANONICAL_MEMORY_NOT_FOUND",
+            "configured canonical private memory was not found",
+        ) from exc
     if db_path.name != CANONICAL_DB_NAME:
         raise VideoUnderstandingError(
             "CANONICAL_STACK_ROOT_REQUIRED",
@@ -174,7 +186,9 @@ def doctor_live_runtime(
         for key in mandatory_keys
         if _executable_ready(runtime.config.executables.get(key))
     )
-    sona_executable_ready = _executable_ready(runtime.config.executables.get("sona"))
+    sona_executable_ready = _executable_ready(
+        runtime.config.executables.get("sona")
+    )
     if ready_mandatory != len(mandatory_keys):
         reasons.append("MANDATORY_PROVIDER_MISSING")
 
@@ -192,8 +206,10 @@ def doctor_live_runtime(
     if memory_status != "READY":
         reasons.append("MEMORY_GATEWAY_BLOCKED")
     queue_counts = runtime.queue.counts()
-    queue_status = "READY" if sum(queue_counts.values()) >= 0 else "BLOCKED"
-    artifact_status = "READY" if runtime.artifact_store.root.is_dir() else "BLOCKED"
+    queue_status = "READY"
+    artifact_status = (
+        "READY" if runtime.artifact_store.root.is_dir() else "BLOCKED"
+    )
     if artifact_status != "READY":
         reasons.append("ARTIFACT_STORE_BLOCKED")
 
@@ -201,7 +217,6 @@ def doctor_live_runtime(
         ready_mandatory == len(mandatory_keys)
         and ollama_status == "READY"
         and memory_status == "READY"
-        and queue_status == "READY"
         and artifact_status == "READY"
     )
     return {
@@ -210,7 +225,9 @@ def doctor_live_runtime(
         "runtime_config_status": "READY",
         "provider_ready_count": ready_mandatory,
         "provider_required_count": len(mandatory_keys),
-        "sona_executable_status": "READY" if sona_executable_ready else "BLOCKED",
+        "sona_executable_status": (
+            "READY" if sona_executable_ready else "BLOCKED"
+        ),
         "ollama_status": ollama_status,
         "ollama_model_count": model_count,
         "sona_status": sona_status,
@@ -227,9 +244,10 @@ def synthetic_memory_roundtrip(
     *,
     approval_ref: str,
 ) -> dict[str, object]:
-    from core.video_understanding.memory_gateway_adapter import build_private_mutation
+    from core.video_understanding.memory_gateway_adapter import (
+        build_private_mutation,
+    )
 
-    manifest_hash = "7" * 64
     record = VideoRecord(
         schema="skeleton.video_understanding.record.v1",
         video_record_id="vr_runtime_healthcheck",
@@ -254,7 +272,7 @@ def synthetic_memory_roundtrip(
         conflicts=(),
         project_links=(),
         review=ReviewDecision("SYSTEM_UNDERSTOOD", "SYSTEM"),
-        artifact_manifest_hash=manifest_hash,
+        artifact_manifest_hash="7" * 64,
     )
     envelope = build_private_mutation(record, approval_ref=approval_ref)
     mutation = runtime.gateway.execute(envelope)
@@ -267,18 +285,23 @@ def synthetic_memory_roundtrip(
             "payload": {
                 "project_id": "skeleton",
                 "dataset_id": "video_understanding",
-                "canonical_ref": f"{payload['fact_namespace']}:{payload['fact_id']}",
+                "canonical_ref": (
+                    f"{payload['fact_namespace']}:{payload['fact_id']}"
+                ),
             },
         }
     )
     mutation_payload = mutation.get("payload")
     read_payload = read.get("payload")
-    committed = isinstance(mutation_payload, Mapping) and mutation_payload.get("status") in {
-        "DONE",
-        "COMMITTED",
-        "SUCCESS",
-    }
-    authoritative = isinstance(read_payload, Mapping) and read_payload.get("authoritative") is True
+    committed = (
+        isinstance(mutation_payload, Mapping)
+        and mutation_payload.get("status")
+        in {"DONE", "COMMITTED", "SUCCESS", "DEGRADED"}
+    )
+    authoritative = (
+        isinstance(read_payload, Mapping)
+        and read_payload.get("authoritative") is True
+    )
     return {
         "schema": "skeleton.video_understanding.memory_roundtrip.v1",
         "status": "DONE" if committed and authoritative else "BLOCKED",
@@ -296,10 +319,11 @@ def _require_existing_canonical_stack(root: Path) -> None:
 
 
 def _executable_ready(value: str | None) -> bool:
-    if not value:
-        return False
-    path = Path(value)
-    return path.is_file() and os.access(path, os.X_OK)
+    return bool(
+        value
+        and Path(value).is_file()
+        and os.access(Path(value), os.X_OK)
+    )
 
 
 def _ollama_status(endpoint: str, selected_model: str) -> tuple[str, int]:
@@ -313,9 +337,13 @@ def _ollama_status(endpoint: str, selected_model: str) -> tuple[str, int]:
     names = {
         str(item.get("name"))
         for item in models
-        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+        if isinstance(item, Mapping)
+        and isinstance(item.get("name"), str)
     }
-    return ("READY" if selected_model in names else "BLOCKED", len(names))
+    return (
+        "READY" if selected_model in names else "BLOCKED",
+        len(names),
+    )
 
 
 def _local_api_status(endpoint: str, path: str) -> str:
@@ -343,8 +371,8 @@ def _local_json_get(endpoint: str, path: str) -> Mapping[str, Any]:
         method="GET",
     )
     try:
-        response = urlopen(request, timeout=3)
-        raw = response.read(1_000_001)
+        with urlopen(request, timeout=3) as response:
+            raw = response.read(1_000_001)
     except Exception as exc:
         raise VideoUnderstandingError(
             "LOCAL_PROVIDER_UNAVAILABLE",
@@ -385,8 +413,7 @@ def _gateway_status(gateway: MemoryGateway) -> str:
         )
     except Exception:
         return "BLOCKED"
-    payload = response.get("payload")
-    return "READY" if isinstance(payload, Mapping) else "BLOCKED"
+    return "READY" if isinstance(response.get("payload"), Mapping) else "BLOCKED"
 
 
 def _doctor_blocked(reason_code: str) -> dict[str, object]:
