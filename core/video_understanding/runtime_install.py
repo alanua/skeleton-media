@@ -39,6 +39,11 @@ PILLOW_VERSION = "12.2.0"
 WORKER_UNIT = "skeleton-video-understanding-worker.service"
 SONA_UNIT = "skeleton-video-understanding-sona.service"
 _SAFE_SHA = frozenset("0123456789abcdef")
+_MANDATORY_PROVIDER_MISSING_REASONS = {
+    "ffmpeg": "FFMPEG_PROVIDER_MISSING",
+    "ffprobe": "FFPROBE_PROVIDER_MISSING",
+    "tesseract": "OCR_PROVIDER_MISSING",
+}
 
 
 @dataclass(frozen=True)
@@ -441,7 +446,10 @@ def _require_executable(name: str) -> str:
     value = shutil.which(name)
     if value is None:
         raise VideoUnderstandingError(
-            "MANDATORY_PROVIDER_MISSING",
+            _MANDATORY_PROVIDER_MISSING_REASONS.get(
+                name,
+                "MANDATORY_PROVIDER_MISSING",
+            ),
             "a mandatory local provider is unavailable",
         )
     return str(Path(value).resolve(strict=True))

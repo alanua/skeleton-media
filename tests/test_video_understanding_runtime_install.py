@@ -15,6 +15,7 @@ from core.video_understanding.runtime_install import (
     YT_DLP_VERSION,
     _download_exact,
     _install_units,
+    _require_executable,
     _runtime_config_payload,
     runtime_layout,
 )
@@ -120,6 +121,61 @@ def test_exact_download_promotes_verified_bytes(tmp_path: Path, monkeypatch) -> 
         max_bytes=1024,
     )
     assert target.read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    ("name", "reason_code"),
+    (
+        ("ffmpeg", "FFMPEG_PROVIDER_MISSING"),
+        ("ffprobe", "FFPROBE_PROVIDER_MISSING"),
+        ("tesseract", "OCR_PROVIDER_MISSING"),
+    ),
+)
+def test_mandatory_provider_missing_uses_provider_reason_code(
+    monkeypatch,
+    name: str,
+    reason_code: str,
+) -> None:
+    monkeypatch.setattr(
+        "core.video_understanding.runtime_install.shutil.which",
+        lambda requested: None,
+    )
+
+    with pytest.raises(VideoUnderstandingError) as exc:
+        _require_executable(name)
+
+    assert exc.value.reason_code == reason_code
+    assert str(exc.value) == "a mandatory local provider is unavailable"
+
+
+def test_unknown_mandatory_provider_name_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "core.video_understanding.runtime_install.shutil.which",
+        lambda requested: None,
+    )
+
+    with pytest.raises(VideoUnderstandingError) as exc:
+        _require_executable("convert")
+
+    assert exc.value.reason_code == "MANDATORY_PROVIDER_MISSING"
+    assert str(exc.value) == "a mandatory local provider is unavailable"
+
+
+def test_mandatory_provider_resolution_uses_strict_resolved_executable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "providers" / "ffmpeg"
+    target.parent.mkdir()
+    target.write_text("", encoding="utf-8")
+    link = tmp_path / "ffmpeg"
+    link.symlink_to(target)
+    monkeypatch.setattr(
+        "core.video_understanding.runtime_install.shutil.which",
+        lambda requested: str(link),
+    )
+
+    assert _require_executable("ffmpeg") == str(target)
 
 
 def test_units_use_fixed_worker_and_no_shell(tmp_path: Path) -> None:
