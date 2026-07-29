@@ -18,6 +18,7 @@ _YOUTUBE_HOSTS = {
     "www.youtu.be",
 }
 _VIMEO_HOSTS = {"vimeo.com", "www.vimeo.com", "player.vimeo.com"}
+_ANITUBE_HOSTS = {"anitube.in.ua", "www.anitube.in.ua"}
 _DIRECT_MEDIA_SUFFIXES = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".mp3", ".m4a", ".wav", ".flac"}
 _FORBIDDEN_HOSTS = {
     "localhost",
@@ -99,6 +100,15 @@ def classify_remote_url(raw_url: str) -> SourceClassification:
             normalized_private_source=normalized,
             source_token=_token(normalized),
         )
+    if host in _ANITUBE_HOSTS:
+        normalized = _normalize_anitube(parsed)
+        return SourceClassification(
+            source_type="REMOTE_VIDEO",
+            adapter="anitube",
+            reason_code="SUPPORTED_ANITUBE",
+            normalized_private_source=normalized,
+            source_token=_token(normalized),
+        )
 
     suffix = PurePosixPath(parsed.path).suffix.casefold()
     if suffix in _DIRECT_MEDIA_SUFFIXES:
@@ -155,3 +165,14 @@ def _normalize_vimeo(parsed) -> str:
     if video_id is None:
         raise VideoUnderstandingError("INVALID_VIMEO_ID", "Vimeo video identity is invalid")
     return urlunsplit(("https", "vimeo.com", f"/{video_id}", "", ""))
+
+
+def _normalize_anitube(parsed) -> str:
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    if path.casefold().endswith(".html"):
+        path = path[:-5]
+    return urlunsplit(("https", "anitube.in.ua", path or "/", "", ""))
