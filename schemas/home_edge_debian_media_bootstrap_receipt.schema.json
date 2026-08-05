@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/alanua/Skeleton/schemas/home_edge_debian_media_bootstrap_receipt.schema.json",
+  "title": "Home Edge Debian Media Bootstrap Public Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "maintenance_task_id",
+    "os_identity_status",
+    "node_identity_status",
+    "reboot_guard_status",
+    "reboot_performed",
+    "packages_required_count",
+    "packages_preexisting_count",
+    "packages_added_count",
+    "package_status",
+    "display_manager_status",
+    "autologin_status",
+    "pipewire_status",
+    "vaapi_status",
+    "mpv_status",
+    "chromium_status",
+    "ssh_status",
+    "gateway_postcheck_status",
+    "physical_audio_status",
+    "physical_video_status",
+    "rollback_ready",
+    "rollback_applied",
+    "mutation_executor_receipt_hash",
+    "final_postcheck_receipt_hash",
+    "audit_receipt_hash",
+    "stable_reason",
+    "success_criteria"
+  ],
+  "properties": {
+    "maintenance_task_id": {
+      "const": "home_edge_01_debian_media_bootstrap_v1"
+    },
+    "os_identity_status": {
+      "enum": ["verified", "blocked", "unverified"]
+    },
+    "node_identity_status": {
+      "enum": ["verified", "blocked", "unverified"]
+    },
+    "reboot_guard_status": {
+      "enum": ["not_present", "disabled_verified", "unverified"]
+    },
+    "reboot_performed": {
+      "const": false
+    },
+    "packages_required_count": {
+      "const": 20
+    },
+    "packages_preexisting_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 20
+    },
+    "packages_added_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 20
+    },
+    "package_status": {
+      "enum": ["installed", "failed", "blocked"]
+    },
+    "display_manager_status": {
+      "enum": ["service_active", "pending_service", "blocked"]
+    },
+    "autologin_status": {
+      "enum": ["configured", "blocked"]
+    },
+    "pipewire_status": {
+      "enum": ["session_ready", "pending_session", "blocked"]
+    },
+    "vaapi_status": {
+      "enum": ["configured", "render_node_missing", "driver_missing", "physical_pending", "blocked"]
+    },
+    "mpv_status": {
+      "enum": ["configured", "blocked"]
+    },
+    "chromium_status": {
+      "enum": ["configured", "blocked"]
+    },
+    "ssh_status": {
+      "enum": ["service_active", "pending_service", "blocked"]
+    },
+    "gateway_postcheck_status": {
+      "enum": ["ok", "blocked", "missing_secret", "pending"]
+    },
+    "physical_audio_status": {
+      "const": "physical_pending"
+    },
+    "physical_video_status": {
+      "const": "physical_pending"
+    },
+    "rollback_ready": {
+      "type": "boolean"
+    },
+    "rollback_applied": {
+      "type": "boolean"
+    },
+    "mutation_executor_receipt_hash": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64}|pending|unavailable)$"
+    },
+    "final_postcheck_receipt_hash": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{64}|pending|unavailable)$"
+    },
+    "audit_receipt_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stable_reason": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:=-]+$"
+    },
+    "success_criteria": {
+      "enum": ["met", "not_met"]
+    }
+  }
+}
