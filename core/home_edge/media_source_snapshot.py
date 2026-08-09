@@ -34,7 +34,9 @@ IDEMPOTENCY_KEY_PREFIX = "home-edge-01-media-source-snapshot-v1"
 PRIVATE_ARTIFACT_RELATIVE_PATH = (
     Path("home_edge") / "home_edge_01" / "media_source_snapshot" / "app.py.latest"
 )
-EXEC_HMAC_SECRET_CONFIG_PATH = Path("/etc/skeleton/home-edge-01/env")
+EXEC_HMAC_SECRET_CONFIG_DIR = Path("/etc/skeleton")
+EXEC_HMAC_SECRET_PROFILE_METADATA_PATH = Path("/etc/skeleton/home-edge-01.env")
+EXEC_HMAC_SECRET_CONFIG_PATH = Path("/etc/skeleton/home-edge-executor-controller.env")
 MAX_EXEC_HMAC_SECRET_CONFIG_BYTES = 64 * 1024
 EXPECTED_MAIN_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FIELD_RE = re.compile(r"^\s*(?P<field>[A-Za-z][A-Za-z0-9 _-]{0,80}):\s*(?P<value>.*?)\s*$")
@@ -261,13 +263,12 @@ def _resolve_exec_hmac_secret(*, environment: Mapping[str, str] | None = None) -
 
 
 def _read_exec_hmac_secret_config() -> str:
-    path = EXEC_HMAC_SECRET_CONFIG_PATH
     try:
-        _validate_exec_hmac_secret_config_path(path)
+        controller_st = _validate_exec_hmac_secret_config_path()
         flags = os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags)
+        fd = os.open(EXEC_HMAC_SECRET_CONFIG_PATH, flags)
     except FileNotFoundError:
         raise ValueError("executor_auth_config_missing") from None
     except OSError:
@@ -276,7 +277,7 @@ def _read_exec_hmac_secret_config() -> str:
     try:
         with os.fdopen(fd, "rb") as handle:
             before = os.fstat(handle.fileno())
-            if not _safe_exec_hmac_secret_config_stat(before):
+            if not _safe_exec_hmac_secret_config_file_metadata(before):
                 raise ValueError("executor_auth_config_unsafe")
             data = handle.read(MAX_EXEC_HMAC_SECRET_CONFIG_BYTES + 1)
             after = os.fstat(handle.fileno())
@@ -285,40 +286,72 @@ def _read_exec_hmac_secret_config() -> str:
     except OSError:
         raise ValueError("executor_auth_config_unsafe") from None
 
-    if _file_id(before) != _file_id(after) or len(data) > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES:
+    if (
+        _file_id(controller_st) != _file_id(before)
+        or _file_id(before) != _file_id(after)
+        or len(data) > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES
+    ):
         raise ValueError("executor_auth_config_unsafe")
     return _parse_exec_hmac_secret_config(data)
 
 
-def _validate_exec_hmac_secret_config_path(path: Path) -> None:
-    parents = list(reversed(path.parents))
-    for parent in parents[1:]:
-        try:
-            st = parent.lstat()
-        except FileNotFoundError:
-            if parent == path.parent or str(parent).startswith(str(path.parent)):
-                raise ValueError("executor_auth_config_missing") from None
-            raise
-        except OSError:
-            raise ValueError("executor_auth_config_unsafe") from None
-        if stat.S_ISLNK(st.st_mode):
-            raise ValueError("executor_auth_config_unsafe")
+def _validate_exec_hmac_secret_config_path() -> os.stat_result:
     try:
-        st = path.lstat()
+        directory_st = EXEC_HMAC_SECRET_CONFIG_DIR.lstat()
+        profile_st = EXEC_HMAC_SECRET_PROFILE_METADATA_PATH.lstat()
+        controller_st = EXEC_HMAC_SECRET_CONFIG_PATH.lstat()
     except FileNotFoundError:
         raise ValueError("executor_auth_config_missing") from None
     except OSError:
         raise ValueError("executor_auth_config_unsafe") from None
-    if not _safe_exec_hmac_secret_config_stat(st):
+    if not _safe_exec_hmac_secret_config_boundary(
+        directory_st=directory_st,
+        profile_st=profile_st,
+        controller_st=controller_st,
+    ):
         raise ValueError("executor_auth_config_unsafe")
+    return controller_st
 
 
-def _safe_exec_hmac_secret_config_stat(st: os.stat_result) -> bool:
+def _safe_exec_hmac_secret_config_boundary(
+    *,
+    directory_st: os.stat_result,
+    profile_st: os.stat_result,
+    controller_st: os.stat_result,
+) -> bool:
+    if stat.S_ISLNK(directory_st.st_mode) or not stat.S_ISDIR(directory_st.st_mode):
+        return False
+    if not _safe_exec_hmac_secret_config_file_metadata(profile_st):
+        return False
+    if not _safe_exec_hmac_secret_config_file_metadata(controller_st):
+        return False
+    if stat.S_IMODE(directory_st.st_mode) & 0o022:
+        return False
+
+    current_uid = os.getuid() if hasattr(os, "getuid") else None
+    controller_owned_by_trusted_process = (
+        controller_st.st_uid == 0
+        or (current_uid is not None and controller_st.st_uid == current_uid)
+    )
+    coherent_private_controller = (
+        directory_st.st_uid == profile_st.st_uid == controller_st.st_uid
+        and directory_st.st_gid == profile_st.st_gid == controller_st.st_gid
+    )
+    return controller_owned_by_trusted_process or coherent_private_controller
+
+
+def _safe_exec_hmac_secret_config_file_metadata(st: os.stat_result) -> bool:
     if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
         return False
     if st.st_size > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES:
         return False
     if stat.S_IMODE(st.st_mode) & 0o022:
+        return False
+    return True
+
+
+def _safe_exec_hmac_secret_config_stat(st: os.stat_result) -> bool:
+    if not _safe_exec_hmac_secret_config_file_metadata(st):
         return False
     current_uid = os.getuid() if hasattr(os, "getuid") else None
     return st.st_uid == 0 or (current_uid is not None and st.st_uid == current_uid)
@@ -540,6 +573,8 @@ def _file_id(st: os.stat_result) -> dict[str, int | None]:
         "mode": stat.S_IFMT(st.st_mode),
         "dev": getattr(st, "st_dev", None),
         "ino": getattr(st, "st_ino", None),
+        "uid": getattr(st, "st_uid", None),
+        "gid": getattr(st, "st_gid", None),
         "size": st.st_size,
         "mtime_ns": getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)),
     }
