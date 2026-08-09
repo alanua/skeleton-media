@@ -12,6 +12,14 @@
 
 The operation is not a general file export facility. Issue metadata may provide only the runtime mode, exact maintenance task ID, repository, expected main SHA, and target. Path, command, script, output path, timeout, lane, user, node, and variant fields are rejected.
 
+## Executor Authentication
+
+The Runner signs the Home Edge executor request with `SKELETON_HOME_EDGE_EXEC_HMAC_SECRET`. An explicit Runner-provided environment mapping or process environment value takes precedence. If that value is absent or empty, the task reads only `/etc/skeleton/home-edge-01/env` and only the single allowlisted variable `SKELETON_HOME_EDGE_EXEC_HMAC_SECRET`.
+
+That fixed private config is parsed as text, never sourced or executed. It must be a regular non-symlink file no larger than 64 KiB, not group/world writable, owned by root or the current Runner uid, with non-symlink parent components from `/etc/skeleton` downward. The parser accepts only simple `KEY=VALUE` or optional `export KEY=VALUE` entries for the allowlisted variable, ignoring comments, blank lines, and unrelated assignments. Duplicate target entries, NUL bytes, malformed quoted values, shell substitution or variable references, backticks, and multiline continuations fail closed before any executor request is made.
+
+Authentication setup failures are reported only as stable public-safe classes: `executor_auth_config_missing`, `executor_auth_config_unsafe`, or `executor_auth_config_invalid`. The credential value, config path, and variable name are never included in public receipts.
+
 ## Validation Boundary
 
 Before any Home Edge request is constructed or signed, the Runner first checks the fixed private artifact location. If a regular, non-symlink, owner-context-safe, private-mode artifact already exists, the Runner reads it with the same 700 KiB bound, reruns UTF-8, credential, Python parse, route, and Skeleton Cast media validation locally, recomputes SHA-256 and byte count, and returns `success_criteria=met` with `stable_reason=already_captured`. That local one-shot path performs zero executor calls and reports only the aggregate `not_required_existing_capture` executor marker.

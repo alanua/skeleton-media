@@ -16,6 +16,7 @@ from core.home_edge.executor import HomeEdgeExecReceipt, HomeEdgeExecRequest, si
 
 SHA = "a" * 40
 SECRET = "test-home-edge-secret"
+CONFIG_SECRET = "synthetic-config-signing-key"
 PRIVATE_MARKER = "10.44.55.66"
 
 
@@ -83,6 +84,14 @@ def executor_receipt(stdout: str) -> HomeEdgeExecReceipt:
     )
 
 
+def write_hmac_config(path: Path, content: bytes | str, *, mode: int = 0o600) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    path.write_bytes(content)
+    os.chmod(path, mode)
+
+
 def test_exact_fixed_task_path_node_lane_run_as_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(snapshot.EXEC_HMAC_SECRET_ENV, SECRET)
 
@@ -108,6 +117,226 @@ def test_exact_fixed_task_path_node_lane_run_as_contract(monkeypatch: pytest.Mon
     assert first.nonce != second.nonce
     assert first.signature == sign_request(first, SECRET)
     assert second.signature == sign_request(second, SECRET)
+
+
+def test_environment_secret_takes_precedence_without_config_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        snapshot,
+        "_read_exec_hmac_secret_config",
+        lambda: pytest.fail("config reader must not be called"),
+    )
+
+    request = snapshot.build_snapshot_request(environment={snapshot.EXEC_HMAC_SECRET_ENV: SECRET})
+
+    assert request.signature == sign_request(request, SECRET)
+
+
+def test_safe_fixed_config_secret_signs_request_and_stays_private(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "etc" / "skeleton" / "home-edge-01" / "env"
+    write_hmac_config(
+        config,
+        f"# unrelated\nexport OTHER_VALUE=ignored\n{snapshot.EXEC_HMAC_SECRET_ENV}='{CONFIG_SECRET}'\n",
+    )
+    monkeypatch.setattr(snapshot, "EXEC_HMAC_SECRET_CONFIG_PATH", config)
+
+    request = snapshot.build_snapshot_request(environment={})
+    serialized = json.dumps(request.to_mapping(), sort_keys=True)
+
+    assert request.signature == sign_request(request, CONFIG_SECRET)
+    assert CONFIG_SECRET not in serialized
+    assert snapshot.EXEC_HMAC_SECRET_ENV not in serialized
+
+
+def test_unrelated_config_variables_and_comments_do_not_affect_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "etc" / "skeleton" / "home-edge-01" / "env"
+    write_hmac_config(
+        config,
+        "\n# comment\nUNRELATED=value\nexport ALSO_UNRELATED='literal'\n"
+        f'{snapshot.EXEC_HMAC_SECRET_ENV}="{CONFIG_SECRET}"\n',
+    )
+    monkeypatch.setattr(snapshot, "EXEC_HMAC_SECRET_CONFIG_PATH", config)
+
+    request = snapshot.build_snapshot_request(environment={})
+
+    assert request.signature == sign_request(request, CONFIG_SECRET)
+
+
+@pytest.mark.parametrize(
+    "kind,content,mode,reason",
+    [
+        (
+            "duplicate",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n"
+            f"export {snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "group_writable",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n",
+            0o620,
+            "executor_auth_config_unsafe",
+        ),
+        (
+            "world_writable",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n",
+            0o602,
+            "executor_auth_config_unsafe",
+        ),
+        (
+            "oversize",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n".encode()
+            + (b"x" * snapshot.MAX_EXEC_HMAC_SECRET_CONFIG_BYTES),
+            0o600,
+            "executor_auth_config_unsafe",
+        ),
+        (
+            "malformed_quote",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}='unterminated\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "command_substitution",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}=$(printf value)\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "backtick",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}=`printf value`\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "variable_reference",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}=${{OTHER_VALUE}}\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "continuation",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}=continued\\\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+        (
+            "nul",
+            f"{snapshot.EXEC_HMAC_SECRET_ENV}=bad".encode() + b"\x00\n",
+            0o600,
+            "executor_auth_config_invalid",
+        ),
+    ],
+)
+def test_invalid_fixed_config_blocks_before_executor_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    content: bytes | str,
+    mode: int,
+    reason: str,
+) -> None:
+    calls = 0
+    config = tmp_path / "etc" / "skeleton" / "home-edge-01" / "env"
+    write_hmac_config(config, content, mode=mode)
+    monkeypatch.setattr(snapshot, "EXEC_HMAC_SECRET_CONFIG_PATH", config)
+
+    def fake_execute(_request: Mapping[str, Any]) -> HomeEdgeExecReceipt:
+        nonlocal calls
+        calls += 1
+        raise AssertionError(f"executor must not be called for {kind}")
+
+    monkeypatch.setattr(snapshot, "execute_home_edge_request", fake_execute)
+
+    receipt = snapshot.execute_media_source_snapshot_task(
+        issue_body(),
+        registered_clean_main_sha=SHA,
+        github_main_sha=SHA,
+        private_root=tmp_path / "private",
+        environment={},
+    )
+    public = json.dumps(receipt, sort_keys=True)
+
+    assert calls == 0
+    assert receipt["stable_reason"] == reason
+    assert CONFIG_SECRET not in public
+    assert str(config) not in public
+
+
+def test_symlink_fixed_config_blocks_before_executor_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "etc" / "skeleton" / "home-edge-01" / "env"
+    target = tmp_path / "target-env"
+    write_hmac_config(target, f"{snapshot.EXEC_HMAC_SECRET_ENV}={CONFIG_SECRET}\n")
+    config.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.symlink(target, config)
+    monkeypatch.setattr(snapshot, "EXEC_HMAC_SECRET_CONFIG_PATH", config)
+    monkeypatch.setattr(
+        snapshot,
+        "execute_home_edge_request",
+        lambda _request: pytest.fail("executor must not be called"),
+    )
+
+    receipt = snapshot.execute_media_source_snapshot_task(
+        issue_body(),
+        registered_clean_main_sha=SHA,
+        github_main_sha=SHA,
+        private_root=tmp_path / "private",
+        environment={},
+    )
+
+    assert receipt["stable_reason"] == "executor_auth_config_unsafe"
+
+
+@pytest.mark.parametrize(
+    "content,reason",
+    [
+        ("UNRELATED=value\n", "executor_auth_config_missing"),
+        (None, "executor_auth_config_missing"),
+    ],
+)
+def test_missing_fixed_config_or_target_variable_is_public_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    content: str | None,
+    reason: str,
+) -> None:
+    calls = 0
+    config = tmp_path / "etc" / "skeleton" / "home-edge-01" / "env"
+    if content is not None:
+        write_hmac_config(config, content)
+    monkeypatch.setattr(snapshot, "EXEC_HMAC_SECRET_CONFIG_PATH", config)
+
+    def fake_execute(_request: Mapping[str, Any]) -> HomeEdgeExecReceipt:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("executor must not be called")
+
+    monkeypatch.setattr(snapshot, "execute_home_edge_request", fake_execute)
+
+    receipt = snapshot.execute_media_source_snapshot_task(
+        issue_body(),
+        registered_clean_main_sha=SHA,
+        github_main_sha=SHA,
+        private_root=tmp_path / "private",
+        environment={},
+    )
+    public = json.dumps(receipt, sort_keys=True)
+
+    assert calls == 0
+    assert receipt["stable_reason"] == reason
+    assert str(config) not in public
+    assert snapshot.EXEC_HMAC_SECRET_ENV not in public
 
 
 @pytest.mark.parametrize(
