@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import io
 import json
 import os
+import pwd
 import stat
 import sys
 from datetime import UTC, datetime
@@ -151,6 +154,40 @@ def _stat_with(st: os.stat_result, **updates: int) -> os.stat_result:
     for name, value in updates.items():
         values[index[name]] = value
     return os.stat_result(values)
+
+
+def _run_snapshot_script(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    euid: int,
+    home: Path | str,
+    pw_name: str = "executor-selected-account",
+) -> dict[str, Any]:
+    monkeypatch.setattr(os, "geteuid", lambda: euid)
+    monkeypatch.setattr(
+        pwd,
+        "getpwuid",
+        lambda uid: type("Pw", (), {"pw_name": pw_name, "pw_uid": uid, "pw_dir": str(home)})(),
+    )
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        exec(snapshot.SNAPSHOT_SCRIPT, {"__name__": "__main__"})
+    return json.loads(stdout.getvalue())
+
+
+def _write_passwd_home_source(
+    tmp_path: Path,
+    *,
+    source: bytes | None = None,
+    home_name: str = "passwd-home",
+) -> tuple[Path, Path]:
+    home = tmp_path / home_name
+    source_path = home / snapshot.SOURCE_PATH
+    source_path.parent.mkdir(parents=True)
+    home.chmod(0o700)
+    source_path.write_bytes(source or valid_source(marker="passwd-home-source"))
+    source_path.chmod(0o600)
+    return home, source_path
 
 
 class FixedHmacFs:
@@ -308,7 +345,7 @@ def test_exact_fixed_task_path_node_lane_run_as_contract(monkeypatch: pytest.Mon
     signed = snapshot.sign_snapshot_request(first, environment={})
 
     assert snapshot.TASK_ID == "home_edge_01_media_source_snapshot_v1"
-    assert snapshot.SOURCE_PATH == "/opt/skeleton/cast/app.py"
+    assert snapshot.SOURCE_PATH == ".local/lib/skeleton-cast/app.py"
     assert snapshot.MAX_SOURCE_BYTES == 700 * 1024
     assert snapshot.SOURCE_PATH in first.script
     assert first.operator_approval_ref == snapshot.OPERATOR_APPROVAL_REF
@@ -1241,18 +1278,149 @@ def test_ambiguous_transport_failure_does_not_write_artifact_or_retry(
 def test_remote_script_checks_file_safety_before_export() -> None:
     script = snapshot.SNAPSHOT_SCRIPT
 
-    assert "os.lstat(SOURCE_PATH)" in script
+    assert "pwd.getpwuid(euid)" in script
+    assert 'request.get("run_as") != RUN_AS' in snapshot.installed_signer_payload_source()
+    assert 'pw_name' not in script
+    assert "desktop-user" not in script
+    obsolete_source_path = "/" + "opt/skeleton/cast/app.py"
+    assert obsolete_source_path not in script
+    assert "os.lstat(source_path)" in script
     assert "same_file(st_l, st_after)" in script
     assert "source_changed_during_read" in script
     assert "stat.S_ISLNK" in script
     assert "stat.S_ISREG" in script
     assert "stat.S_IWOTH" in script
-    assert "os.access(SOURCE_PATH, os.R_OK)" in script
+    assert "os.access(source_path, os.R_OK)" in script
     assert "has_credential_literal(tree)" in script
     assert "base64.b64encode(source)" in script
     assert "private_source_b64" in script
     assert "ssh " not in script.lower()
     assert "sudo" not in script.lower()
+
+
+def test_remote_script_accepts_executor_selected_non_logical_passwd_account_and_ignores_home_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    current_uid = os.getuid() if hasattr(os, "getuid") else 1
+    passwd_home, passwd_source = _write_passwd_home_source(
+        tmp_path,
+        source=valid_source(marker="passwd-home-source"),
+    )
+    env_home, env_source = _write_passwd_home_source(
+        tmp_path,
+        source=valid_source(marker="env-home-source"),
+        home_name="env-home",
+    )
+    monkeypatch.setenv("HOME", str(env_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(env_source.parent))
+
+    receipt = _run_snapshot_script(
+        monkeypatch,
+        euid=current_uid,
+        home=passwd_home,
+        pw_name="synthetic-desktop-account",
+    )
+
+    public = receipt["public"]
+    assert public["source_identity"] == "verified"
+    assert public["source_sha256"] == hashlib.sha256(passwd_source.read_bytes()).hexdigest()
+    assert public["source_sha256"] != hashlib.sha256(env_source.read_bytes()).hexdigest()
+    assert public["stable_reason"] == "validated"
+
+
+def test_remote_script_blocks_root_effective_user_before_passwd_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home, _source = _write_passwd_home_source(tmp_path)
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: pytest.fail("root must not resolve passwd identity"))
+
+    receipt = _run_snapshot_script(monkeypatch, euid=0, home=home)
+
+    assert receipt["public"]["stable_reason"] == "effective_user_root"
+    assert receipt["public"]["source_identity"] == "blocked"
+
+
+def test_remote_script_blocks_unresolvable_effective_user(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home, _source = _write_passwd_home_source(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: 424242)
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid: (_ for _ in ()).throw(KeyError("missing")))
+    stdout = io.StringIO()
+
+    with contextlib.redirect_stdout(stdout):
+        exec(snapshot.SNAPSHOT_SCRIPT, {"__name__": "__main__"})
+
+    receipt = json.loads(stdout.getvalue())
+    assert receipt["public"]["stable_reason"] == "effective_user_unresolvable"
+
+
+@pytest.mark.parametrize(
+    "case,home_value,expected_reason",
+    [
+        ("empty", "", "passwd_home_malformed"),
+        ("relative", "relative/home", "passwd_home_malformed"),
+        ("normalized", None, "passwd_home_malformed"),
+    ],
+)
+def test_remote_script_blocks_malformed_passwd_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    home_value: str | None,
+    expected_reason: str,
+) -> None:
+    current_uid = os.getuid() if hasattr(os, "getuid") else 1
+    if case == "normalized":
+        home_value = str(tmp_path / "parent" / ".." / "passwd-home")
+
+    receipt = _run_snapshot_script(monkeypatch, euid=current_uid, home=home_value or "")
+
+    assert receipt["public"]["stable_reason"] == expected_reason
+
+
+@pytest.mark.parametrize(
+    "case,expected_reason",
+    [
+        ("symlink", "passwd_home_symlink"),
+        ("file", "passwd_home_not_directory"),
+        ("wrong_owner", "passwd_home_wrong_owner"),
+        ("world_writable", "passwd_home_writable"),
+    ],
+)
+def test_remote_script_blocks_unsafe_passwd_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    expected_reason: str,
+) -> None:
+    current_uid = os.getuid() if hasattr(os, "getuid") else 1
+    home = tmp_path / case
+    real_lstat = os.lstat
+    if case == "symlink":
+        target = tmp_path / "target"
+        target.mkdir()
+        home.symlink_to(target)
+    elif case == "file":
+        home.write_text("not a directory", encoding="utf-8")
+    else:
+        home.mkdir()
+        home.chmod(0o777 if case == "world_writable" else 0o700)
+    if case == "wrong_owner":
+        monkeypatch.setattr(
+            os,
+            "lstat",
+            lambda path: _stat_with(real_lstat(path), st_uid=current_uid + 1)
+            if Path(path) == home
+            else real_lstat(path),
+        )
+
+    receipt = _run_snapshot_script(monkeypatch, euid=current_uid, home=home)
+
+    assert receipt["public"]["stable_reason"] == expected_reason
 
 
 def test_simulated_file_change_between_pre_post_metadata_blocks() -> None:
