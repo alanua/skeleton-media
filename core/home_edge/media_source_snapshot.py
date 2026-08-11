@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
-from core.home_edge.executor import HomeEdgeExecError, HomeEdgeExecRequest, sign_request
+from core.home_edge.executor import HomeEdgeExecError, HomeEdgeExecRequest
 from core.home_edge.executor_gateway import EXEC_HMAC_SECRET_ENV, execute_home_edge_request
 
 
@@ -37,10 +37,9 @@ PRIVATE_ARTIFACT_RELATIVE_PATH = (
 )
 INSTALLED_SIGNER_EXECUTABLE = Path("/usr/local/libexec/skeleton/home-edge/media-source-snapshot/signer")
 INSTALLED_SIGNER_PAYLOAD = Path("/usr/local/lib/skeleton/home-edge/media-source-snapshot/signer_payload.py")
-SIGNER_SUDO_ARGV = ("sudo", "--non-interactive", str(INSTALLED_SIGNER_EXECUTABLE))
+SIGNER_SUDO_ARGV = ("/usr/bin/sudo", "-n", str(INSTALLED_SIGNER_EXECUTABLE))
 SIGNER_STDIN_MAX_BYTES = 256 * 1024
 SIGNER_TIMEOUT_SECONDS = 10
-TEST_RUNNER_HMAC_OVERRIDE_ENV = "SKELETON_HOME_EDGE_TEST_ALLOW_RUNNER_HMAC"
 EXEC_HMAC_SECRET_CONFIG_DIR = Path("/etc/skeleton")
 EXEC_HMAC_SECRET_PROFILE_METADATA_PATH = Path("/etc/skeleton/home-edge-01.env")
 EXEC_HMAC_SECRET_CONFIG_PATH = Path("/etc/skeleton/home-edge-executor-controller.env")
@@ -50,9 +49,6 @@ FIELD_RE = re.compile(r"^\s*(?P<field>[A-Za-z][A-Za-z0-9 _-]{0,80}):\s*(?P<value
 PUBLIC_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:=-]+$")
 AUTH_CONFIG_REASON_RE = re.compile(
     r"^executor_auth_config_(?:missing|unsafe|invalid)$"
-)
-CONFIG_ASSIGNMENT_RE = re.compile(
-    r"^(?:export[ \t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$"
 )
 VERSION_MARKER_RE = re.compile(r"(?i)\bv63\b")
 SECRET_NAME_TOKENS = (
@@ -272,20 +268,8 @@ def sign_snapshot_request(
 ) -> HomeEdgeExecRequest:
     unsigned = unsigned_request.to_mapping(include_signature=False)
     _validate_unsigned_snapshot_request_for_signing(unsigned)
-    if _runner_hmac_override_allowed(environment=environment):
-        secret = _resolve_exec_hmac_secret(environment=environment)
-        return HomeEdgeExecRequest.from_mapping(
-            {**unsigned, "signature": sign_request(unsigned_request, secret)}
-        )
+    _ = environment
     return _sign_snapshot_request_with_installed_signer(unsigned)
-
-
-def _runner_hmac_override_allowed(*, environment: Mapping[str, str] | None = None) -> bool:
-    return bool(
-        environment is not None
-        and environment.get(TEST_RUNNER_HMAC_OVERRIDE_ENV) == "1"
-        and environment.get(EXEC_HMAC_SECRET_ENV)
-    )
 
 
 def _sign_snapshot_request_with_installed_signer(unsigned: Mapping[str, Any]) -> HomeEdgeExecRequest:
@@ -418,155 +402,6 @@ def _validate_snapshot_authority(request: Mapping[str, Any], *, include_signatur
         or len(request["signature"]) != len("sha256=") + 64
     ):
         raise ValueError("snapshot_signer_authority_mismatch")
-
-
-def _resolve_exec_hmac_secret(*, environment: Mapping[str, str] | None = None) -> str:
-    env = os.environ if environment is None else environment
-    secret = env.get(EXEC_HMAC_SECRET_ENV, "")
-    if secret:
-        return secret
-    return _read_exec_hmac_secret_config()
-
-
-def _read_exec_hmac_secret_config() -> str:
-    try:
-        controller_st = _validate_exec_hmac_secret_config_path()
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(EXEC_HMAC_SECRET_CONFIG_PATH, flags)
-    except FileNotFoundError:
-        raise ValueError("executor_auth_config_missing") from None
-    except OSError:
-        raise ValueError("executor_auth_config_unsafe") from None
-
-    try:
-        with os.fdopen(fd, "rb") as handle:
-            before = os.fstat(handle.fileno())
-            if not _safe_exec_hmac_secret_config_file_metadata(before):
-                raise ValueError("executor_auth_config_unsafe")
-            data = handle.read(MAX_EXEC_HMAC_SECRET_CONFIG_BYTES + 1)
-            after = os.fstat(handle.fileno())
-    except ValueError:
-        raise
-    except OSError:
-        raise ValueError("executor_auth_config_unsafe") from None
-
-    if (
-        _file_id(controller_st) != _file_id(before)
-        or _file_id(before) != _file_id(after)
-        or len(data) > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES
-    ):
-        raise ValueError("executor_auth_config_unsafe")
-    return _parse_exec_hmac_secret_config(data)
-
-
-def _validate_exec_hmac_secret_config_path() -> os.stat_result:
-    try:
-        directory_st = EXEC_HMAC_SECRET_CONFIG_DIR.lstat()
-        profile_st = EXEC_HMAC_SECRET_PROFILE_METADATA_PATH.lstat()
-        controller_st = EXEC_HMAC_SECRET_CONFIG_PATH.lstat()
-    except FileNotFoundError:
-        raise ValueError("executor_auth_config_missing") from None
-    except OSError:
-        raise ValueError("executor_auth_config_unsafe") from None
-    if not _safe_exec_hmac_secret_config_boundary(
-        directory_st=directory_st,
-        profile_st=profile_st,
-        controller_st=controller_st,
-    ):
-        raise ValueError("executor_auth_config_unsafe")
-    return controller_st
-
-
-def _safe_exec_hmac_secret_config_boundary(
-    *,
-    directory_st: os.stat_result,
-    profile_st: os.stat_result,
-    controller_st: os.stat_result,
-) -> bool:
-    if stat.S_ISLNK(directory_st.st_mode) or not stat.S_ISDIR(directory_st.st_mode):
-        return False
-    if not _safe_exec_hmac_secret_config_file_metadata(profile_st):
-        return False
-    if not _safe_exec_hmac_secret_config_file_metadata(controller_st):
-        return False
-    if stat.S_IMODE(directory_st.st_mode) & 0o022:
-        return False
-
-    current_uid = os.getuid() if hasattr(os, "getuid") else None
-    controller_owned_by_trusted_process = (
-        controller_st.st_uid == 0
-        or (current_uid is not None and controller_st.st_uid == current_uid)
-    )
-    coherent_private_controller = (
-        directory_st.st_uid == profile_st.st_uid == controller_st.st_uid
-        and directory_st.st_gid == profile_st.st_gid == controller_st.st_gid
-    )
-    return controller_owned_by_trusted_process or coherent_private_controller
-
-
-def _safe_exec_hmac_secret_config_file_metadata(st: os.stat_result) -> bool:
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-        return False
-    if st.st_size > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES:
-        return False
-    if stat.S_IMODE(st.st_mode) & 0o022:
-        return False
-    return True
-
-
-def _safe_exec_hmac_secret_config_stat(st: os.stat_result) -> bool:
-    if not _safe_exec_hmac_secret_config_file_metadata(st):
-        return False
-    current_uid = os.getuid() if hasattr(os, "getuid") else None
-    return st.st_uid == 0 or (current_uid is not None and st.st_uid == current_uid)
-
-
-def _parse_exec_hmac_secret_config(data: bytes) -> str:
-    if b"\x00" in data:
-        raise ValueError("executor_auth_config_invalid")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise ValueError("executor_auth_config_invalid") from None
-    secret: str | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.endswith("\\"):
-            raise ValueError("executor_auth_config_invalid")
-        match = CONFIG_ASSIGNMENT_RE.fullmatch(line)
-        if match is None:
-            raise ValueError("executor_auth_config_invalid")
-        if match.group("name") != EXEC_HMAC_SECRET_ENV:
-            continue
-        if secret is not None:
-            raise ValueError("executor_auth_config_invalid")
-        secret = _parse_exec_hmac_secret_config_value(match.group("value"))
-    if not secret:
-        raise ValueError("executor_auth_config_missing")
-    return secret
-
-
-def _parse_exec_hmac_secret_config_value(value: str) -> str:
-    if "$" in value or "`" in value:
-        raise ValueError("executor_auth_config_invalid")
-    if value.startswith(("'", '"')):
-        quote = value[0]
-        if len(value) < 2 or not value.endswith(quote):
-            raise ValueError("executor_auth_config_invalid")
-        decoded = value[1:-1]
-        if quote in decoded or "\\" in decoded:
-            raise ValueError("executor_auth_config_invalid")
-    elif "'" in value or '"' in value:
-        raise ValueError("executor_auth_config_invalid")
-    else:
-        decoded = value
-    if "\n" in decoded or "\r" in decoded or not decoded:
-        raise ValueError("executor_auth_config_invalid")
-    return decoded
 
 
 def public_receipt_from_executor_stdout(receipt: Mapping[str, Any]) -> dict[str, object]:

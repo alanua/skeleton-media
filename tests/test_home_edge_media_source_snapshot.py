@@ -20,10 +20,6 @@ SHA = "a" * 40
 SECRET = "test-home-edge-secret"
 CONFIG_SECRET = "synthetic-config-signing-key"
 PRIVATE_MARKER = "10.44.55.66"
-TEST_HMAC_ENV = {
-    snapshot.EXEC_HMAC_SECRET_ENV: SECRET,
-    "SKELETON_HOME_EDGE_TEST_ALLOW_RUNNER_HMAC": "1",
-}
 
 
 def issue_body(**updates: str) -> str:
@@ -102,11 +98,17 @@ def _installed_signer_namespace() -> dict[str, Any]:
 
 
 def _signed_with_fixed_config() -> HomeEdgeExecRequest:
-    unsigned = snapshot.build_snapshot_request()
-    secret = snapshot._resolve_exec_hmac_secret(environment={})
-    return HomeEdgeExecRequest.from_mapping(
-        {**unsigned.to_mapping(include_signature=False), "signature": sign_request(unsigned, secret)}
-    )
+    return snapshot.sign_snapshot_request(snapshot.build_snapshot_request(), environment={})
+
+
+def _install_test_signer(monkeypatch: pytest.MonkeyPatch, *, secret: str = SECRET) -> None:
+    def signer(unsigned: Mapping[str, Any]) -> HomeEdgeExecRequest:
+        request = HomeEdgeExecRequest.from_mapping(dict(unsigned))
+        return HomeEdgeExecRequest.from_mapping(
+            {**dict(unsigned), "signature": sign_request(request, secret)}
+        )
+
+    monkeypatch.setattr(snapshot, "_sign_snapshot_request_with_installed_signer", signer)
 
 
 def _install_in_process_static_signer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -298,11 +300,12 @@ class FixedHmacFs:
 
 
 def test_exact_fixed_task_path_node_lane_run_as_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_test_signer(monkeypatch)
     monkeypatch.delenv(snapshot.EXEC_HMAC_SECRET_ENV, raising=False)
 
     first = snapshot.build_snapshot_request()
     second = snapshot.build_snapshot_request()
-    signed = snapshot.sign_snapshot_request(first, environment=TEST_HMAC_ENV)
+    signed = snapshot.sign_snapshot_request(first, environment={})
 
     assert snapshot.TASK_ID == "home_edge_01_media_source_snapshot_v1"
     assert snapshot.SOURCE_PATH == "/opt/skeleton/cast/app.py"
@@ -326,7 +329,7 @@ def test_exact_fixed_task_path_node_lane_run_as_contract(monkeypatch: pytest.Mon
     assert signed.signature == sign_request(signed, SECRET)
 
 
-def test_environment_secret_takes_precedence_without_config_read(
+def test_environment_secret_cannot_bypass_installed_signer_or_read_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -340,13 +343,20 @@ def test_environment_secret_takes_precedence_without_config_read(
         lambda *_args, **_kwargs: pytest.fail("filesystem content must not be read"),
     )
     monkeypatch.setattr(
-        snapshot,
-        "_read_exec_hmac_secret_config",
-        lambda: pytest.fail("config reader must not be called"),
+        snapshot.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("test should use explicit signer injection"),
     )
+    _install_test_signer(monkeypatch)
 
     unsigned = snapshot.build_snapshot_request()
-    request = snapshot.sign_snapshot_request(unsigned, environment=TEST_HMAC_ENV)
+    request = snapshot.sign_snapshot_request(
+        unsigned,
+        environment={
+            snapshot.EXEC_HMAC_SECRET_ENV: "must-not-be-used",
+            "SKELETON_HOME_EDGE_TEST_ALLOW_RUNNER_HMAC": "1",
+        },
+    )
 
     assert request.signature == sign_request(request, SECRET)
 
@@ -501,21 +511,18 @@ def test_missing_or_wrong_approval_blocks_before_hmac_read(
     else:
         unsigned.pop("operator_approval_ref")
     request = HomeEdgeExecRequest.from_mapping(unsigned)
-    monkeypatch.setattr(
-        snapshot,
-        "_resolve_exec_hmac_secret",
-        lambda **_kwargs: pytest.fail("HMAC secret must not be read"),
-    )
+    monkeypatch.setattr(snapshot, "_sign_snapshot_request_with_installed_signer", lambda _request: pytest.fail("signer must not run"))
 
     with pytest.raises(ValueError, match="snapshot_signer_operator_approval_mismatch"):
-        snapshot.sign_snapshot_request(request, environment=TEST_HMAC_ENV)
+        snapshot.sign_snapshot_request(request, environment={snapshot.EXEC_HMAC_SECRET_ENV: "must-not-be-used"})
 
 
 def test_altered_signed_approval_blocks_before_transport(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    signed = snapshot.sign_snapshot_request(snapshot.build_snapshot_request(), environment=TEST_HMAC_ENV)
+    _install_test_signer(monkeypatch)
+    signed = snapshot.sign_snapshot_request(snapshot.build_snapshot_request(), environment={})
     altered = HomeEdgeExecRequest.from_mapping(
         {**signed.to_mapping(include_signature=True), "operator_approval_ref": "WRONG_APPROVAL"}
     )
@@ -531,7 +538,7 @@ def test_altered_signed_approval_blocks_before_transport(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert receipt["stable_reason"] == "snapshot_signer_signed_authority_mismatch"
@@ -1089,6 +1096,7 @@ def test_execute_uses_only_signed_executor_gateway_and_writes_private_0600(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _install_test_signer(monkeypatch)
     calls: list[Mapping[str, Any]] = []
     source = valid_source()
     def fake_execute(request: Mapping[str, Any]) -> HomeEdgeExecReceipt:
@@ -1102,7 +1110,7 @@ def test_execute_uses_only_signed_executor_gateway_and_writes_private_0600(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert snapshot.success_criteria_met(receipt)
@@ -1125,6 +1133,7 @@ def test_second_execute_uses_existing_artifact_without_home_edge_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _install_test_signer(monkeypatch)
     calls: list[Mapping[str, Any]] = []
     source = valid_source()
     def fake_execute(request: Mapping[str, Any]) -> HomeEdgeExecReceipt:
@@ -1138,14 +1147,14 @@ def test_second_execute_uses_existing_artifact_without_home_edge_request(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
     second = snapshot.execute_media_source_snapshot_task(
         issue_body(),
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert snapshot.success_criteria_met(first)
@@ -1192,7 +1201,7 @@ def test_suspicious_existing_artifact_fails_closed_without_replacement(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert receipt["success_criteria"] == "not_met"
@@ -1207,6 +1216,7 @@ def test_ambiguous_transport_failure_does_not_write_artifact_or_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _install_test_signer(monkeypatch)
     calls = 0
     def fake_execute(_request: Mapping[str, Any]) -> HomeEdgeExecReceipt:
         nonlocal calls
@@ -1220,7 +1230,7 @@ def test_ambiguous_transport_failure_does_not_write_artifact_or_retry(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert calls == 1
@@ -1270,6 +1280,7 @@ def test_artifact_hash_size_mismatch_blocks_fresh_write(
     tmp_path: Path,
 ) -> None:
     artifact = snapshot.private_artifact_path(private_root=tmp_path)
+    _install_test_signer(monkeypatch)
     monkeypatch.setattr(snapshot, "_sha256_file", lambda _path: "0" * 64)
     monkeypatch.setattr(
         snapshot,
@@ -1282,7 +1293,7 @@ def test_artifact_hash_size_mismatch_blocks_fresh_write(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
 
     assert receipt["stable_reason"] == "private_artifact_hash_mismatch"
@@ -1294,6 +1305,7 @@ def test_public_receipt_and_status_lines_exclude_source_text_private_markers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _install_test_signer(monkeypatch)
     source = valid_source(marker=PRIVATE_MARKER)
     monkeypatch.setattr(
         snapshot,
@@ -1306,7 +1318,7 @@ def test_public_receipt_and_status_lines_exclude_source_text_private_markers(
         registered_clean_main_sha=SHA,
         github_main_sha=SHA,
         private_root=tmp_path,
-        environment=TEST_HMAC_ENV,
+        environment={},
     )
     public = json.dumps(receipt, sort_keys=True) + "\n".join(snapshot.receipt_status_lines(receipt))
 

@@ -4,15 +4,16 @@ set -Eeuo pipefail
 REPO_ROOT=""
 RUNNER_USER="agent"
 RUNNER_SERVICE="skeleton-runner-poll.service"
+PROTECTED_INSTALLER_PATH="/usr/local/libexec/skeleton/home-edge/media-source-snapshot-installer/install_home_edge_media_source_snapshot_signer.sh"
 INSTALL_ROOT="/usr/local/lib/skeleton/home-edge/media-source-snapshot"
 EXEC_ROOT="/usr/local/libexec/skeleton/home-edge/media-source-snapshot"
 SUDOERS_PATH="/etc/sudoers.d/skeleton-home-edge-media-source-snapshot-signer"
 PAYLOAD_REL="scripts/home_edge_media_source_snapshot_signer_payload.py"
 WRAPPER_REL="scripts/home_edge_media_source_snapshot_signer"
 CONTRACT_REL="core/home_edge/media_source_snapshot.py"
-PAYLOAD_BLOB_SHA="abff33c120f1f260e6953bd10ad8824a8553c1d2"
+PAYLOAD_BLOB_SHA="9d1d69216116f42f195e2cad4c0f385754d8e6e0"
 WRAPPER_BLOB_SHA="24620d9e9fe4f62c055113e6aeefb2d0984be2d5"
-CONTRACT_BLOB_SHA="1f9c07d9c39584d8faf1c8403047f87995b3b1ff"
+CONTRACT_BLOB_SHA="7ddfbfc54d55eccbbd95c73ad0016221e7222cd9"
 COMMITTED=0
 BACKUP_DIR=""
 STAGING_PARENT=""
@@ -27,8 +28,11 @@ usage() {
 Usage: sudo scripts/install_home_edge_media_source_snapshot_signer.sh [--repo-root PATH]
 
 Copies exact reviewed signer files as inert data into a root-owned immutable runtime.
-The privileged installer never executes checkout content. Sudo access is bound
-only to the canonical Skeleton Runner service account: agent.
+The existing Runner maintenance fabric must first copy/hash-verify this
+installer as inert data at:
+  /usr/local/libexec/skeleton/home-edge/media-source-snapshot-installer/install_home_edge_media_source_snapshot_signer.sh
+Root execution is accepted only from that protected installed copy. Sudo access
+is bound only to the canonical Skeleton Runner service account: agent.
 EOF
 }
 
@@ -56,6 +60,21 @@ fi
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   printf 'BLOCKED: installer must run as root\n' >&2
+  exit 2
+fi
+if [[ "$(readlink -f -- "$0")" != "$PROTECTED_INSTALLER_PATH" ]]; then
+  printf 'BLOCKED: root must execute only protected installed signer installer copy\n' >&2
+  exit 2
+fi
+if [[ -L "$PROTECTED_INSTALLER_PATH" || ! -f "$PROTECTED_INSTALLER_PATH" ]]; then
+  printf 'BLOCKED: protected signer installer copy is unsafe\n' >&2
+  exit 2
+fi
+protected_uid="$(stat -c '%u' -- "$PROTECTED_INSTALLER_PATH")"
+protected_gid="$(stat -c '%g' -- "$PROTECTED_INSTALLER_PATH")"
+protected_mode="$(stat -c '%a' -- "$PROTECTED_INSTALLER_PATH")"
+if [[ "$protected_uid" != "0" || "$protected_gid" != "0" || $((8#$protected_mode & 8#022)) -ne 0 ]]; then
+  printf 'BLOCKED: protected signer installer copy ownership or mode is unsafe\n' >&2
   exit 2
 fi
 if ! getent passwd "$RUNNER_USER" >/dev/null; then

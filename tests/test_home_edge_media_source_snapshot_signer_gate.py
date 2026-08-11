@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -31,11 +33,7 @@ def test_environment_without_test_sentinel_cannot_bypass_installed_signer(
         return _synthetic_installed_signature(request)
 
     monkeypatch.setattr(snapshot, "_sign_snapshot_request_with_installed_signer", installed_signer)
-    monkeypatch.setattr(
-        snapshot,
-        "_resolve_exec_hmac_secret",
-        lambda **_kwargs: pytest.fail("production-like environment must not read Runner HMAC directly"),
-    )
+    assert not hasattr(snapshot, "_resolve_exec_hmac_secret")
 
     signed = snapshot.sign_snapshot_request(
         unsigned,
@@ -46,33 +44,54 @@ def test_environment_without_test_sentinel_cannot_bypass_installed_signer(
     assert signed.signature == "sha256=" + "a" * 64
 
 
-def test_test_sentinel_allows_bounded_direct_hmac_override() -> None:
+def test_signer_uses_exact_absolute_sudo_invocation() -> None:
+    assert snapshot.SIGNER_SUDO_ARGV == (
+        "/usr/bin/sudo",
+        "-n",
+        str(snapshot.INSTALLED_SIGNER_EXECUTABLE),
+    )
+
+
+def test_no_environment_combination_enables_runner_hmac_signing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     secret = "synthetic-test-only-signing-secret"
     unsigned = snapshot.build_snapshot_request()
     environment = {
         snapshot.EXEC_HMAC_SECRET_ENV: secret,
-        snapshot.TEST_RUNNER_HMAC_OVERRIDE_ENV: "1",
+        "SKELETON_HOME_EDGE_TEST_ALLOW_RUNNER_HMAC": "1",
     }
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        input: bytes,
+        stdout: int,
+        stderr: int,
+        timeout: int,
+        check: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        assert argv == list(snapshot.SIGNER_SUDO_ARGV)
+        assert env == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+        request = HomeEdgeExecRequest.from_mapping(json.loads(input.decode("utf-8")))
+        signed = {
+            **request.to_mapping(include_signature=False),
+            "signature": sign_request(request, secret),
+        }
+        return subprocess.CompletedProcess(argv, 0, json.dumps(signed).encode("utf-8"), b"")
+
+    monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
 
     signed = snapshot.sign_snapshot_request(unsigned, environment=environment)
 
+    assert calls == [list(snapshot.SIGNER_SUDO_ARGV)]
     assert signed.signature == sign_request(signed, secret)
-
-
-def test_test_sentinel_without_explicit_synthetic_secret_cannot_enable_override() -> None:
-    assert snapshot._runner_hmac_override_allowed(
-        environment={snapshot.TEST_RUNNER_HMAC_OVERRIDE_ENV: "1"}
-    ) is False
-
-
-@pytest.mark.parametrize("value", ["", "0", "true", "TRUE", "yes", "2"])
-def test_wrong_test_sentinel_value_cannot_enable_override_even_with_secret(value: str) -> None:
-    assert snapshot._runner_hmac_override_allowed(
-        environment={
-            snapshot.TEST_RUNNER_HMAC_OVERRIDE_ENV: value,
-            snapshot.EXEC_HMAC_SECRET_ENV: "synthetic-test-only-signing-secret",
-        }
-    ) is False
+    assert not hasattr(snapshot, "TEST_RUNNER_HMAC_OVERRIDE_ENV")
+    assert not hasattr(snapshot, "_runner_hmac_override_allowed")
+    assert not hasattr(snapshot, "_resolve_exec_hmac_secret")
 
 
 def test_installer_contract_blob_pin_matches_current_contract_source() -> None:

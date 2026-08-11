@@ -68,6 +68,10 @@ def test_installer_never_executes_checkout_python() -> None:
     assert "contract_source.py" in text
     assert "visudo -cf" in text
     assert 'NOPASSWD: $EXEC_ROOT/signer ""' in text
+    assert 'PROTECTED_INSTALLER_PATH="/usr/local/libexec/skeleton/home-edge/media-source-snapshot-installer/install_home_edge_media_source_snapshot_signer.sh"' in text
+    assert 'readlink -f -- "$0"' in text
+    assert "root must execute only protected installed signer installer copy" in text
+    assert "protected signer installer copy ownership or mode is unsafe" in text
 
 
 def test_installer_rollback_restores_exact_preinstall_presence() -> None:
