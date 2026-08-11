@@ -31,9 +31,16 @@ MAX_SOURCE_BYTES = 700 * 1024
 MAX_EXECUTOR_OUTPUT_BYTES = 1_000_000
 RECEIPT_SCHEMA = "skeleton.home_edge.media_source_snapshot_receipt.v1"
 IDEMPOTENCY_KEY_PREFIX = "home-edge-01-media-source-snapshot-v1"
+OPERATOR_APPROVAL_REF = "EXPLICIT_MINIMAL_HOME_EDGE_SNAPSHOT_ACCESS_REPAIR_2026_08_09"
 PRIVATE_ARTIFACT_RELATIVE_PATH = (
     Path("home_edge") / "home_edge_01" / "media_source_snapshot" / "app.py.latest"
 )
+INSTALLED_SIGNER_EXECUTABLE = Path("/usr/local/libexec/skeleton/home-edge/media-source-snapshot/signer")
+INSTALLED_SIGNER_PAYLOAD = Path("/usr/local/lib/skeleton/home-edge/media-source-snapshot/signer_payload.py")
+SIGNER_SUDO_ARGV = ("sudo", "--non-interactive", str(INSTALLED_SIGNER_EXECUTABLE))
+SIGNER_STDIN_MAX_BYTES = 256 * 1024
+SIGNER_TIMEOUT_SECONDS = 10
+TEST_RUNNER_HMAC_OVERRIDE_ENV = "SKELETON_HOME_EDGE_TEST_ALLOW_RUNNER_HMAC"
 EXEC_HMAC_SECRET_CONFIG_DIR = Path("/etc/skeleton")
 EXEC_HMAC_SECRET_PROFILE_METADATA_PATH = Path("/etc/skeleton/home-edge-01.env")
 EXEC_HMAC_SECRET_CONFIG_PATH = Path("/etc/skeleton/home-edge-executor-controller.env")
@@ -133,10 +140,17 @@ def execute_media_source_snapshot_task(
         return existing
 
     try:
-        request = build_snapshot_request(environment=environment)
+        unsigned = build_snapshot_request(environment=environment)
+        request = sign_snapshot_request(unsigned, environment=environment)
+        _validate_signed_snapshot_request_for_transport(
+            request,
+            expected_unsigned=unsigned.to_mapping(include_signature=False),
+        )
     except ValueError as exc:
         reason = exc.args[0] if exc.args else ""
-        if isinstance(reason, str) and AUTH_CONFIG_REASON_RE.fullmatch(reason):
+        if isinstance(reason, str) and (
+            AUTH_CONFIG_REASON_RE.fullmatch(reason) or reason.startswith("snapshot_signer_")
+        ):
             return _blocked_receipt(reason)
         raise
     try:
@@ -231,8 +245,7 @@ def validate_main_sha(
 
 
 def build_snapshot_request(*, environment: Mapping[str, str] | None = None) -> HomeEdgeExecRequest:
-    secret = _resolve_exec_hmac_secret(environment=environment)
-    request = HomeEdgeExecRequest.from_mapping(
+    return HomeEdgeExecRequest.from_mapping(
         {
             "request_id": f"{TASK_ID}-{uuid4()}",
             "node_id": TARGET_NODE,
@@ -247,11 +260,164 @@ def build_snapshot_request(*, environment: Mapping[str, str] | None = None) -> H
             "nonce": f"{TASK_ID}-{uuid4()}",
             "max_output_bytes": MAX_EXECUTOR_OUTPUT_BYTES,
             "public": False,
+            "operator_approval_ref": OPERATOR_APPROVAL_REF,
         }
     )
-    return HomeEdgeExecRequest.from_mapping(
-        {**request.to_mapping(include_signature=False), "signature": sign_request(request, secret)}
+
+
+def sign_snapshot_request(
+    unsigned_request: HomeEdgeExecRequest,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> HomeEdgeExecRequest:
+    unsigned = unsigned_request.to_mapping(include_signature=False)
+    _validate_unsigned_snapshot_request_for_signing(unsigned)
+    if _runner_hmac_override_allowed(environment=environment):
+        secret = _resolve_exec_hmac_secret(environment=environment)
+        return HomeEdgeExecRequest.from_mapping(
+            {**unsigned, "signature": sign_request(unsigned_request, secret)}
+        )
+    return _sign_snapshot_request_with_installed_signer(unsigned)
+
+
+def _runner_hmac_override_allowed(*, environment: Mapping[str, str] | None = None) -> bool:
+    return bool(
+        environment is not None
+        and environment.get(TEST_RUNNER_HMAC_OVERRIDE_ENV) == "1"
+        and environment.get(EXEC_HMAC_SECRET_ENV)
     )
+
+
+def _sign_snapshot_request_with_installed_signer(unsigned: Mapping[str, Any]) -> HomeEdgeExecRequest:
+    try:
+        completed = subprocess.run(
+            list(SIGNER_SUDO_ARGV),
+            input=json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=SIGNER_TIMEOUT_SECONDS,
+            check=False,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError("snapshot_signer_unavailable") from None
+    if completed.returncode != 0:
+        reason = _installed_signer_error_reason(completed.stdout)
+        if reason is not None:
+            raise ValueError(reason)
+        raise ValueError("snapshot_signer_rejected")
+    if len(completed.stdout) > SIGNER_STDIN_MAX_BYTES:
+        raise ValueError("snapshot_signer_rejected")
+    try:
+        signed = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("snapshot_signer_invalid_output") from None
+    if not isinstance(signed, Mapping):
+        raise ValueError("snapshot_signer_invalid_output")
+    request = HomeEdgeExecRequest.from_mapping(signed)
+    _validate_signed_snapshot_request_for_transport(request, expected_unsigned=unsigned)
+    return request
+
+
+def _installed_signer_error_reason(stdout: bytes) -> str | None:
+    if not stdout or len(stdout) > 4096:
+        return None
+    try:
+        decoded = json.loads(stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, Mapping):
+        return None
+    reason = decoded.get("error")
+    return reason if isinstance(reason, str) and AUTH_CONFIG_REASON_RE.fullmatch(reason) else None
+
+
+def _validate_unsigned_snapshot_request_for_signing(request: Mapping[str, Any]) -> None:
+    if request.get("operator_approval_ref") != OPERATOR_APPROVAL_REF:
+        raise ValueError("snapshot_signer_operator_approval_mismatch")
+    _validate_snapshot_authority(request, include_signature=False)
+
+
+def _validate_signed_snapshot_request_for_transport(
+    request: HomeEdgeExecRequest,
+    *,
+    expected_unsigned: Mapping[str, Any],
+) -> None:
+    signed = request.to_mapping(include_signature=True)
+    unsigned = request.to_mapping(include_signature=False)
+    if unsigned != dict(expected_unsigned):
+        raise ValueError("snapshot_signer_signed_authority_mismatch")
+    if signed.get("operator_approval_ref") != OPERATOR_APPROVAL_REF:
+        raise ValueError("snapshot_signer_operator_approval_mismatch")
+    if not request.signature:
+        raise ValueError("snapshot_signer_missing_signature")
+    _validate_snapshot_authority(signed, include_signature=True)
+
+
+def _validate_snapshot_authority(request: Mapping[str, Any], *, include_signature: bool) -> None:
+    required = {
+        "schema",
+        "request_id",
+        "node_id",
+        "argv",
+        "environment",
+        "timeout_seconds",
+        "execution_lane",
+        "operator_approval_ref",
+        "idempotency_key",
+        "run_as",
+        "mode",
+        "script",
+        "script_interpreter",
+        "timestamp",
+        "nonce",
+        "max_output_bytes",
+        "public",
+    }
+    if include_signature:
+        required.add("signature")
+    if set(request) != required:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["schema"] != "skeleton.home_edge.exec_request.v1":
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if not isinstance(request["request_id"], str) or not request["request_id"].startswith(TASK_ID + "-"):
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["node_id"] != TARGET_NODE:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["execution_lane"] != EXECUTION_LANE:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["operator_approval_ref"] != OPERATOR_APPROVAL_REF:
+        raise ValueError("snapshot_signer_operator_approval_mismatch")
+    if request["run_as"] != RUN_AS:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["mode"] != "script" or request["script"] != SNAPSHOT_SCRIPT:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["script_interpreter"] != "python3":
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["timeout_seconds"] != REQUEST_TIMEOUT_SECONDS:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["max_output_bytes"] != MAX_EXECUTOR_OUTPUT_BYTES:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["argv"] != [] or "cwd" in request or request["environment"] != {}:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if "stdin_text" in request or "stdin_base64" in request:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if request["public"] is not False:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if not isinstance(request["idempotency_key"], str) or not request["idempotency_key"].startswith(
+        IDEMPOTENCY_KEY_PREFIX + "-"
+    ):
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if not isinstance(request["timestamp"], str) or not request["timestamp"]:
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if not isinstance(request["nonce"], str) or not request["nonce"].startswith(TASK_ID + "-"):
+        raise ValueError("snapshot_signer_authority_mismatch")
+    if include_signature and (
+        not isinstance(request["signature"], str)
+        or not request["signature"].startswith("sha256=")
+        or len(request["signature"]) != len("sha256=") + 64
+    ):
+        raise ValueError("snapshot_signer_authority_mismatch")
 
 
 def _resolve_exec_hmac_secret(*, environment: Mapping[str, str] | None = None) -> str:
@@ -1008,4 +1174,248 @@ def main():
     }}, sort_keys=True, separators=(",", ":")))
 
 main()
+'''
+
+
+def installed_signer_payload_source() -> str:
+    return f'''#!/usr/bin/python3
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+TASK_ID = {TASK_ID!r}
+TARGET_NODE = {TARGET_NODE!r}
+EXECUTION_LANE = {EXECUTION_LANE!r}
+RUN_AS = {RUN_AS!r}
+REQUEST_TIMEOUT_SECONDS = {REQUEST_TIMEOUT_SECONDS!r}
+MAX_EXECUTOR_OUTPUT_BYTES = {MAX_EXECUTOR_OUTPUT_BYTES!r}
+IDEMPOTENCY_KEY_PREFIX = {IDEMPOTENCY_KEY_PREFIX!r}
+OPERATOR_APPROVAL_REF = {OPERATOR_APPROVAL_REF!r}
+SNAPSHOT_SCRIPT = {SNAPSHOT_SCRIPT!r}
+EXEC_HMAC_SECRET_ENV = {EXEC_HMAC_SECRET_ENV!r}
+EXEC_HMAC_SECRET_CONFIG_DIR = Path({str(EXEC_HMAC_SECRET_CONFIG_DIR)!r})
+EXEC_HMAC_SECRET_PROFILE_METADATA_PATH = Path({str(EXEC_HMAC_SECRET_PROFILE_METADATA_PATH)!r})
+EXEC_HMAC_SECRET_CONFIG_PATH = Path({str(EXEC_HMAC_SECRET_CONFIG_PATH)!r})
+MAX_EXEC_HMAC_SECRET_CONFIG_BYTES = {MAX_EXEC_HMAC_SECRET_CONFIG_BYTES!r}
+SIGNER_STDIN_MAX_BYTES = {SIGNER_STDIN_MAX_BYTES!r}
+CONFIG_ASSIGNMENT_RE = re.compile(r"^(?:export[ \\t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
+
+
+def fail(reason: str = "snapshot_signer_rejected") -> None:
+    if reason.startswith("executor_auth_config_"):
+        print(json.dumps({{"error": reason}}, sort_keys=True, separators=(",", ":")))
+    raise SystemExit(2)
+
+
+def file_id(st):
+    return {{
+        "mode": stat.S_IFMT(st.st_mode),
+        "dev": getattr(st, "st_dev", None),
+        "ino": getattr(st, "st_ino", None),
+        "uid": getattr(st, "st_uid", None),
+        "gid": getattr(st, "st_gid", None),
+        "size": st.st_size,
+        "mtime_ns": getattr(st, "st_mtime_ns", int(st.st_mtime * 1000000000)),
+    }}
+
+
+def safe_config_file_metadata(st) -> bool:
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return False
+    if st.st_size > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES:
+        return False
+    if stat.S_IMODE(st.st_mode) & 0o022:
+        return False
+    return True
+
+
+def safe_config_boundary(directory_st, profile_st, controller_st) -> bool:
+    if stat.S_ISLNK(directory_st.st_mode) or not stat.S_ISDIR(directory_st.st_mode):
+        return False
+    if not safe_config_file_metadata(profile_st) or not safe_config_file_metadata(controller_st):
+        return False
+    if stat.S_IMODE(directory_st.st_mode) & 0o022:
+        return False
+    current_uid = os.getuid() if hasattr(os, "getuid") else None
+    controller_owned_by_trusted_process = (
+        controller_st.st_uid == 0
+        or (current_uid is not None and controller_st.st_uid == current_uid)
+    )
+    coherent_private_controller = (
+        directory_st.st_uid == profile_st.st_uid == controller_st.st_uid
+        and directory_st.st_gid == profile_st.st_gid == controller_st.st_gid
+    )
+    return controller_owned_by_trusted_process or coherent_private_controller
+
+
+def read_secret() -> str:
+    try:
+        directory_st = EXEC_HMAC_SECRET_CONFIG_DIR.lstat()
+        profile_st = EXEC_HMAC_SECRET_PROFILE_METADATA_PATH.lstat()
+        controller_st = EXEC_HMAC_SECRET_CONFIG_PATH.lstat()
+    except FileNotFoundError:
+        fail("executor_auth_config_missing")
+    except OSError:
+        fail("executor_auth_config_unsafe")
+    if not safe_config_boundary(directory_st, profile_st, controller_st):
+        fail("executor_auth_config_unsafe")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(EXEC_HMAC_SECRET_CONFIG_PATH, flags)
+    except OSError:
+        fail("executor_auth_config_unsafe")
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not safe_config_file_metadata(before):
+                fail("executor_auth_config_unsafe")
+            data = handle.read(MAX_EXEC_HMAC_SECRET_CONFIG_BYTES + 1)
+            after = os.fstat(handle.fileno())
+    except OSError:
+        fail("executor_auth_config_unsafe")
+    if file_id(controller_st) != file_id(before) or file_id(before) != file_id(after):
+        fail("executor_auth_config_unsafe")
+    if len(data) > MAX_EXEC_HMAC_SECRET_CONFIG_BYTES:
+        fail("executor_auth_config_unsafe")
+    if b"\\x00" in data:
+        fail("executor_auth_config_invalid")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("executor_auth_config_invalid")
+    secret = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\\\"):
+            fail("executor_auth_config_invalid")
+        match = CONFIG_ASSIGNMENT_RE.fullmatch(line)
+        if match is None:
+            fail("executor_auth_config_invalid")
+        if match.group("name") != EXEC_HMAC_SECRET_ENV:
+            continue
+        if secret is not None:
+            fail("executor_auth_config_invalid")
+        secret = parse_value(match.group("value"))
+    if not secret:
+        fail("executor_auth_config_missing")
+    return secret
+
+
+def parse_value(value: str) -> str:
+    if "$" in value or "`" in value:
+        fail("executor_auth_config_invalid")
+    if value.startswith(("'", '"')):
+        quote = value[0]
+        if len(value) < 2 or not value.endswith(quote):
+            fail("executor_auth_config_invalid")
+        decoded = value[1:-1]
+        if quote in decoded or "\\\\" in decoded:
+            fail("executor_auth_config_invalid")
+    elif "'" in value or '"' in value:
+        fail("executor_auth_config_invalid")
+    else:
+        decoded = value
+    if "\\n" in decoded or "\\r" in decoded or not decoded:
+        fail("executor_auth_config_invalid")
+    return decoded
+
+
+def validate_authority(request: dict) -> None:
+    required = {{
+        "schema",
+        "request_id",
+        "node_id",
+        "argv",
+        "environment",
+        "timeout_seconds",
+        "execution_lane",
+        "operator_approval_ref",
+        "idempotency_key",
+        "run_as",
+        "mode",
+        "script",
+        "script_interpreter",
+        "timestamp",
+        "nonce",
+        "max_output_bytes",
+        "public",
+    }}
+    if set(request) != required:
+        fail()
+    if request.get("operator_approval_ref") != OPERATOR_APPROVAL_REF:
+        fail()
+    if request.get("schema") != "skeleton.home_edge.exec_request.v1":
+        fail()
+    if not isinstance(request.get("request_id"), str) or not request["request_id"].startswith(TASK_ID + "-"):
+        fail()
+    if request.get("node_id") != TARGET_NODE or request.get("execution_lane") != EXECUTION_LANE:
+        fail()
+    if request.get("run_as") != RUN_AS or request.get("mode") != "script":
+        fail()
+    if request.get("script") != SNAPSHOT_SCRIPT or request.get("script_interpreter") != "python3":
+        fail()
+    if request.get("timeout_seconds") != REQUEST_TIMEOUT_SECONDS:
+        fail()
+    if request.get("max_output_bytes") != MAX_EXECUTOR_OUTPUT_BYTES:
+        fail()
+    if request.get("argv") != [] or "cwd" in request or request.get("environment") != {{}}:
+        fail()
+    if request.get("public") is not False:
+        fail()
+    if not isinstance(request.get("idempotency_key"), str) or not request["idempotency_key"].startswith(IDEMPOTENCY_KEY_PREFIX + "-"):
+        fail()
+    if not isinstance(request.get("timestamp"), str) or not request["timestamp"]:
+        fail()
+    if not isinstance(request.get("nonce"), str) or not request["nonce"].startswith(TASK_ID + "-"):
+        fail()
+
+
+def sign(request: dict, secret: str) -> str:
+    canonical = dict(request)
+    canonical.pop("public", None)
+    message = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256=" + hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def main() -> None:
+    if len(sys.argv) != 1:
+        fail()
+    data = sys.stdin.buffer.read(SIGNER_STDIN_MAX_BYTES + 1)
+    if not data or len(data) > SIGNER_STDIN_MAX_BYTES:
+        fail()
+    try:
+        request = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail()
+    if not isinstance(request, dict):
+        fail()
+    validate_authority(request)
+    signed = dict(request)
+    signed["signature"] = sign(request, read_secret())
+    print(json.dumps(signed, sort_keys=True, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def installed_signer_wrapper_source() -> str:
+    return f'''#!/bin/sh
+set -efu
+if [ "$#" -ne 0 ]; then
+  exit 2
+fi
+exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/bin/python3 {INSTALLED_SIGNER_PAYLOAD}
 '''

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -efu
+if [ "$#" -ne 0 ]; then
+  exit 2
+fi
+exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/bin/python3 /usr/local/lib/skeleton/home-edge/media-source-snapshot/signer_payload.py
