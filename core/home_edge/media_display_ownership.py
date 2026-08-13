@@ -119,9 +119,26 @@ def _walk_playback_markers(value: Any, *, depth: int = 0) -> list[Ownership]:
     return markers
 
 
+def _canonical_player_observation(payload: Mapping[object, object]) -> Observation:
+    running = payload.get("running")
+    if running is False:
+        return Observation("skeleton_cast_player", Ownership.CLEAR, "player_running_false")
+    if running is True:
+        pause = payload.get("pause")
+        if pause is False:
+            return Observation("skeleton_cast_player", Ownership.OWNER, "player_running_unpaused")
+        if pause is True:
+            return Observation("skeleton_cast_player", Ownership.CLEAR, "player_running_paused")
+        return Observation("skeleton_cast_player", Ownership.UNKNOWN, "player_pause_missing_or_invalid")
+    return Observation("skeleton_cast_player", Ownership.UNKNOWN, "player_running_missing_or_invalid")
+
+
 def player_observation(payload: Any) -> Observation:
     if not isinstance(payload, Mapping):
         return Observation("skeleton_cast_player", Ownership.UNKNOWN, "player_payload_invalid")
+    canonical = _canonical_player_observation(payload)
+    if canonical.state is not Ownership.UNKNOWN:
+        return canonical
     markers = _walk_playback_markers(payload)
     if Ownership.OWNER in markers:
         return Observation("skeleton_cast_player", Ownership.OWNER, "player_explicit_playing")

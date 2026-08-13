@@ -21,6 +21,37 @@ def test_desktop_video_playing_is_owner() -> None:
     assert json.loads(public)["reason"] == "confirmed_video_playing"
 
 
+@pytest.mark.parametrize("mode", ["kiosk", "chrome", "mpv"])
+def test_desktop_video_running_unpaused_is_owner(mode: str) -> None:
+    decision = ownership.decide_from_snapshots(
+        mode_payload={"mode": mode},
+        player_payload={"running": True, "pause": False},
+    )
+    assert decision.state is ownership.Ownership.OWNER
+    assert decision.exit_code == 0
+    assert decision.observations[-1].reason == "player_running_unpaused"
+
+
+def test_desktop_video_running_paused_releases_to_clear() -> None:
+    decision = ownership.decide_from_snapshots(
+        mode_payload={"mode": "chrome"},
+        player_payload={"running": True, "pause": True},
+    )
+    assert decision.state is ownership.Ownership.CLEAR
+    assert decision.exit_code == 1
+    assert decision.observations[-1].reason == "player_running_paused"
+
+
+def test_desktop_video_not_running_releases_to_clear() -> None:
+    decision = ownership.decide_from_snapshots(
+        mode_payload={"mode": "kiosk"},
+        player_payload={"running": False},
+    )
+    assert decision.state is ownership.Ownership.CLEAR
+    assert decision.exit_code == 1
+    assert decision.observations[-1].reason == "player_running_false"
+
+
 def test_desktop_video_paused_releases_to_clear() -> None:
     decision = ownership.decide_from_snapshots(
         mode_payload={"mode": "chrome"},
@@ -35,6 +66,47 @@ def test_desktop_video_missing_or_malformed_player_fails_closed() -> None:
         decision = ownership.decide_from_snapshots(mode_payload={"mode": "vlc"}, player_payload=payload)
         assert decision.state is ownership.Ownership.UNKNOWN
         assert decision.exit_code == 2
+
+
+@pytest.mark.parametrize("payload", [{"running": True}, {"running": True, "pause": "false"}])
+def test_desktop_video_running_true_without_explicit_pause_is_unknown(payload: dict[str, object]) -> None:
+    decision = ownership.decide_from_snapshots(mode_payload={"mode": "mpv"}, player_payload=payload)
+    assert decision.state is ownership.Ownership.UNKNOWN
+    assert decision.exit_code == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"running": True, "status": "playing"},
+        {"running": "true", "pause": False, "playing": True},
+    ],
+)
+def test_unresolved_running_pause_falls_back_to_explicit_playing_marker(payload: dict[str, object]) -> None:
+    decision = ownership.decide_from_snapshots(mode_payload={"mode": "vlc"}, player_payload=payload)
+    assert decision.state is ownership.Ownership.OWNER
+    assert decision.reason == "confirmed_video_playing"
+    assert decision.observations[-1].reason == "player_explicit_playing"
+
+
+def test_unresolved_running_pause_falls_back_to_explicit_clear_marker() -> None:
+    decision = ownership.decide_from_snapshots(
+        mode_payload={"mode": "chrome"},
+        player_payload={"running": True, "pause": None, "playback_status": "paused"},
+    )
+    assert decision.state is ownership.Ownership.CLEAR
+    assert decision.reason == "confirmed_video_not_playing"
+    assert decision.observations[-1].reason == "player_explicit_not_playing"
+
+
+def test_contradictory_explicit_markers_keep_existing_owner_precedence() -> None:
+    decision = ownership.decide_from_snapshots(
+        mode_payload={"mode": "kiosk"},
+        player_payload={"player": {"playback_state": "paused"}, "playing": True},
+    )
+    assert decision.state is ownership.Ownership.OWNER
+    assert decision.reason == "confirmed_video_playing"
+    assert decision.observations[-1].reason == "player_explicit_playing"
 
 
 def test_android_youtube_playing_is_owner() -> None:
