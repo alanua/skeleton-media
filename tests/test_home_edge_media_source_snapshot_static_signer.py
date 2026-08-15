@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD_PATH = ROOT / "scripts/home_edge_media_source_snapshot_signer_payload.py"
 WRAPPER_PATH = ROOT / "scripts/home_edge_media_source_snapshot_signer"
 INSTALLER_PATH = ROOT / "scripts/install_home_edge_media_source_snapshot_signer.sh"
+CONTRACT_REPO_PATH = "core/home_edge/media_source_snapshot.py"
 
 
 def _load_payload():
@@ -24,10 +25,25 @@ def _load_payload():
     return module
 
 
-def test_static_payload_reconstructs_exact_reviewed_snapshot_script(monkeypatch: pytest.MonkeyPatch) -> None:
+def _exact_reviewed_contract_source(tmp_path: Path) -> Path:
+    source = tmp_path / "contract_source.py"
+    source.write_bytes(
+        subprocess.check_output(
+            ["git", "show", f"HEAD:{CONTRACT_REPO_PATH}"],
+            cwd=ROOT,
+        )
+    )
+    source.chmod(0o644)
+    return source
+
+
+def test_static_payload_reconstructs_exact_reviewed_snapshot_script(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     payload = _load_payload()
     original_safe_regular = payload._safe_regular
-    monkeypatch.setattr(payload, "CONTRACT_SOURCE", Path(snapshot.__file__))
+    monkeypatch.setattr(payload, "CONTRACT_SOURCE", _exact_reviewed_contract_source(tmp_path))
     monkeypatch.setattr(
         payload,
         "_safe_regular",
@@ -140,10 +156,13 @@ def test_wrong_approval_fails_before_secret_read(monkeypatch: pytest.MonkeyPatch
     assert exc.value.code == 2
 
 
-def test_payload_signing_matches_executor_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_payload_signing_matches_executor_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     payload = _load_payload()
     original_safe_regular = payload._safe_regular
-    monkeypatch.setattr(payload, "CONTRACT_SOURCE", Path(snapshot.__file__))
+    monkeypatch.setattr(payload, "CONTRACT_SOURCE", _exact_reviewed_contract_source(tmp_path))
     monkeypatch.setattr(
         payload,
         "_safe_regular",
