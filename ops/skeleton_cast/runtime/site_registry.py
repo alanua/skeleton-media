@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import importlib
+import runpy
 import sys
-from skeleton_media.cast import site_registry as _impl
 
-sys.modules[__name__] = _impl
+_TARGET = "skeleton_media.cast.site_registry"
+
+if __name__ == "__main__":
+    runpy.run_module(_TARGET, run_name="__main__")
+else:
+    _impl = importlib.import_module(_TARGET)
+    sys.modules[__name__] = _impl
