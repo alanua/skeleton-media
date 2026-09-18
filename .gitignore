@@ -24,3 +24,5 @@ runtime-state/
 downloads/
 posters/
 live-import/
+
+*.egg-info/
