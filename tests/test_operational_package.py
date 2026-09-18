@@ -45,5 +45,4 @@ def test_cast_module_is_importable_from_package(name: str) -> None:
 def test_legacy_runtime_shim_delegates_to_package(name: str) -> None:
     shim = importlib.import_module(name)
     implementation = importlib.import_module(f"skeleton_media.cast.{name}")
-    assert shim.__file__ != implementation.__file__
-    assert getattr(shim, "_impl") is implementation
+    assert shim is implementation

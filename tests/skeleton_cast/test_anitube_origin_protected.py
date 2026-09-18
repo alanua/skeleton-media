@@ -3,7 +3,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-RESOLVER = ROOT / "ops/skeleton_cast/runtime/resolver.py"
+RESOLVER = ROOT / "skeleton_media/cast/resolver.py"
 APP = ROOT / "ops/skeleton_cast/runtime/app.py"
 
 def test_runtime_sources_parse_and_are_canonical():
