@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.queue import FileQueue
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
-from core.video_understanding.worker import VideoWorker
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.queue import FileQueue
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.worker import VideoWorker
 
 
 def config(tmp_path: Path, attempts: int = 2) -> VideoRuntimeConfig:

@@ -1,8 +1,21 @@
-# Skeleton Cast canonical runtime
+# Skeleton Cast media runtime
 
-`runtime/app.py` and `runtime/resolver.py` are the repository-owned sources deployed to Home Edge.
+This directory is the repository-owned source for the media service extracted from Skeleton.
 
-Deploy: `ops/skeleton_cast/deploy.sh`
-Rollback: `ops/skeleton_cast/rollback.sh <backup-directory>`
+## Status
 
-Issue #2096 adds explicit `origin_protected`, a one-hour restart-safe AniTube cooldown, `.html` request canonicalization and fast-fail before Chromium/public mirror retries. It does not bypass Cloudflare.
+The reusable media modules, UI assets, resolver/player/discovery stack, IPTV support, media state, Trakt sync and current public-safe Android client source are now tracked here.
+
+The production Home Edge service is not cut over yet. Its current app controller also contains unrelated private Home integrations. For that reason deploy.sh and rollback.sh are deliberately fail-closed in this extraction.
+
+## Production rule
+
+A future cutover must:
+1. split or adapt the remaining production route glue;
+2. build/test an exact source revision;
+3. create a verified rollback backup;
+4. execute only through the registered Skeleton Home Edge executor;
+5. independently verify the service, foreground/player state and physical media output;
+6. persist audit evidence and canonical source provenance.
+
+No SSH-side direct deployment is supported by this repository.

@@ -10,13 +10,15 @@ from typing import Any
 
 import yaml
 
-CONFIG = Path("/home/skeleton/.config/skeleton-cast/sites.yaml")
+HOME = Path(os.environ.get('SKELETON_MEDIA_HOME', str(Path.home()))).expanduser()
+CONFIG = Path(os.environ.get('SKELETON_MEDIA_SITE_REGISTRY', str(HOME / '.config/skeleton-cast/sites.yaml'))).expanduser()
 LOCK = threading.Lock()
 SEED = {
     "uakino.club": ("dle-playlists", "bootstrap"),
     "uakino.me": ("dle-playlists", "bootstrap"),
     "uakino.best": ("dle-playlists", "bootstrap"),
     "klon.fun": ("generic-iframe", "operator-confirmed"),
+    "lavakino.net": ("lavakino-zenith", "operator-confirmed"),
     "ashdi.vip": ("ashdi", "bootstrap"),
     "youtube.com": ("youtube", "bootstrap"),
     "youtu.be": ("youtube", "bootstrap"),

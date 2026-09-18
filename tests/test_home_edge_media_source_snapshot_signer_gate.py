@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import pytest
 
-from core.home_edge import media_source_snapshot as snapshot
+from skeleton_media.home_edge import media_source_snapshot as snapshot
 from core.home_edge.executor import HomeEdgeExecRequest, sign_request
 
 ROOT = Path(__file__).resolve().parents[1]

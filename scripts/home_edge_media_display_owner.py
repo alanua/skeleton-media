@@ -16,7 +16,7 @@ else:
 try:
     from media_display_ownership import live_decision, public_json  # type: ignore[import-not-found]
 except ImportError:
-    from core.home_edge.media_display_ownership import live_decision, public_json
+    from skeleton_media.home_edge.media_display_ownership import live_decision, public_json
 
 
 def main() -> int:

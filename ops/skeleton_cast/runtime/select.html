@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<title>Відкрити відео · Home</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/app-color-180.png">
+<link rel="stylesheet" href="/static/ui.css?v=114">
+</head>
+<body>
+<header class="detail-topbar">
+  <button class="icon-btn" type="button" onclick="location.href='/phone'" aria-label="Назад" title="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/arrow-left.svg')"></span></button>
+  <strong>Відкрити відео</strong>
+  <button class="icon-btn" type="button" onclick="refreshJob()" aria-label="Оновити джерела" title="Оновити джерела"><span class="mdi" style="--icon:url('/static/icons/mdi/history.svg')"></span></button>
+</header>
+<main class="detail-main">
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+  <section class="card form-card">
+    <form id="videoForm">
+      <div id="catalogCard" class="catalog-card" hidden>
+        <img id="catalogPoster" alt="Постер" hidden>
+        <div class="catalog-copy"><strong id="catalogTitle"></strong><span id="catalogMeta"></span><p id="catalogOverview"></p></div>
+      </div>
+      <label class="field-label" for="url">Посилання на відео</label>
+      <div class="input-shell">
+        <span class="mdi" style="--icon:url('/static/icons/mdi/link-variant.svg')"></span>
+        <input id="url" type="url" inputmode="url" placeholder="https://…" autocomplete="off" required>
+        <button class="clear-btn" type="button" onclick="clearUrl()" aria-label="Очистити">×</button>
+      </div>
+
+      <div class="select-list">
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/account-voice.svg')"></span>
+          <div class="select-box"><label for="voice">Озвучення</label><div class="select-wrap"><select id="voice" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+          <span></span>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/playlist-play.svg')"></span>
+          <div class="select-box"><label for="season">Сезон</label><div class="select-wrap"><select id="season" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+          <span></span>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/playlist-play.svg')"></span>
+          <div class="select-box"><label for="episode">Серія</label><div class="select-wrap"><select id="episode" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+          <span></span>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/quality-high.svg')"></span>
+          <div class="select-box"><label for="quality">Якість</label><div class="select-wrap"><select id="quality" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+          <span></span>
+        </div>
+      </div>
+
+      <button class="primary-action" id="openButton" type="submit"><span class="mdi" style="--icon:url('/static/icons/mdi/play.svg')"></span><span>Відкрити відео</span></button>
+    </form>
+  </section>
+
+  <section class="card summary-card">
+    <h2>Підсумок</h2>
+    <div id="summary" class="summary-placeholder">Вставте посилання, щоб знайти відео.</div>
+  </section>
+</main>
+<nav class="bottom-nav" aria-label="Навігація">
+  <a class="nav-item" href="/phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></a>
+  <a class="nav-item active" href="/video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></a>
+  <a class="nav-item" href="/remote"><span class="mdi" style="--icon:url('/static/icons/mdi/remote.svg')"></span><span>Пульт</span></a>
+  <a class="nav-item" href="/devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></a>
+</nav>
+<script>
+let currentJobId=__JOB_ID__;
+const $=id=>document.getElementById(id);
+let sources=[],jobData=null,pollTimer=null,noticeTimer=false;
+const unique=a=>[...new Set(a)];
+const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+const episodeNumber=x=>{const m=String(x).match(/\d+/);return m?Number(m[0]):9999};
+const voiceOf=s=>s.group||s.translation||'Основне джерело';
+const seasonOf=s=>String(s.season||'1');
+const episodeOf=s=>String(s.episode||'1');
+const durationOf=s=>Number(s.duration)||0;
+const isTrailer=s=>{const d=durationOf(s);return d>0&&d<600};
+const clock=d=>{d=Math.max(0,Math.round(Number(d)||0));const h=Math.floor(d/3600),m=Math.floor((d%3600)/60),x=d%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`:`${m}:${String(x).padStart(2,'0')}`};
+const audioRank=s=>s.has_audio===true?0:(s.has_audio===false?2:1);
+const qualityOf=s=>{let q=s.quality||'Авто';if(s.has_audio===false&&!q.includes('без звуку'))q+=' · без звуку';return isTrailer(s)?`${q} · Трейлер ${clock(durationOf(s))}`:q};
+function message(text,error=false){clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').className='notice show'+(error?' error':'');noticeTimer=setTimeout(()=>$('notice').className='notice',error?4500:1800)}
+async function jf(url,opt){const r=await fetch(url,opt);let j={};try{j=await r.json()}catch(e){j={error:r.status===404?'Збережений запис більше недоступний':`Помилка Home Edge (${r.status})`}}return[r,j]}
+function fill(id,values){const el=$(id);el.innerHTML=values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');el.disabled=!values.length}
+function voices(){return unique(sources.map(voiceOf))}
+function seasons(v){return unique(sources.filter(s=>voiceOf(s)===v).map(seasonOf)).sort((a,b)=>episodeNumber(a)-episodeNumber(b))}
+function episodes(v,se){return unique(sources.filter(s=>voiceOf(s)===v&&seasonOf(s)===se).map(episodeOf)).sort((a,b)=>episodeNumber(a)-episodeNumber(b)||a.localeCompare(b,'uk'))}
+function candidates(){return sources.filter(s=>voiceOf(s)===$('voice').value&&seasonOf(s)===$('season').value&&episodeOf(s)===$('episode').value).sort((a,b)=>Number(isTrailer(a))-Number(isTrailer(b))||audioRank(a)-audioRank(b)||(Number(b.height)||0)-(Number(a.height)||0))}
+function selectedSource(){return candidates()[$('quality').selectedIndex]||candidates()[0]}
+function updateQuality(){fill('quality',candidates().map(qualityOf));updateSummary()}
+function updateEpisode(){fill('episode',episodes($('voice').value,$('season').value));updateQuality()}
+function updateSeason(){fill('season',seasons($('voice').value));updateEpisode()}
+function updateSummary(){const s=selectedSource();if(!s){$('summary').className='summary-placeholder';$('summary').textContent=currentJobId?'Шукаю доступні варіанти…':'Вставте посилання, щоб знайти відео.';return}const rows=[['link-variant','Посилання',$('url').value],['account-voice','Озвучення',voiceOf(s)],['playlist-play','Сезон',seasonOf(s)],['playlist-play','Серія',episodeOf(s)],['quality-high','Якість',qualityOf(s)]];$('summary').className='';$('summary').innerHTML=rows.map(([i,k,v])=>`<div class="summary-row"><span class="mdi" style="--icon:url('/static/icons/mdi/${i}.svg')"></span><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}
+function renderCatalog(j){const c=j?.catalog;if(!c){$('catalogCard').hidden=true;return}$('catalogCard').hidden=false;$('catalogTitle').textContent=c.title||j.title||'Відео';$('catalogMeta').textContent=[c.media_type==='tv'?'Серіал':'Фільм',c.year,c.catalog_provider?String(c.catalog_provider).toUpperCase():''].filter(Boolean).join(' · ');$('catalogOverview').textContent=String(c.overview||'').slice(0,220);const img=$('catalogPoster');if(c.poster){img.hidden=false;img.src=c.poster}else{img.hidden=true;img.removeAttribute('src')}}
+async function loadJob(){if(!currentJobId)return;clearTimeout(pollTimer);try{const[r,j]=await jf('/api/jobs/'+currentJobId);if(!r.ok){message(j.error||'Не вдалося відкрити відео',true);return}jobData=j;renderCatalog(j);if(j.page_url&&!$('url').value)$('url').value=j.page_url;if(['resolving','discovering'].includes(j.status)){message(j.status==='discovering'?'Шукаю картку й українські джерела…':'Шукаю відео…');$('summary').textContent='Шукаю доступні варіанти…';pollTimer=setTimeout(loadJob,1200);return}if(j.status==='error'){message(j.error||'Відео не знайдено',true);$('summary').textContent=j.error||'Відео не знайдено';return}{const all=(j.sources||[]);const confirmedAudio=all.some(s=>s.has_audio===true);sources=(confirmedAudio?all.filter(s=>s.has_audio!==false):all).sort((a,b)=>Number(isTrailer(a))-Number(isTrailer(b))||audioRank(a)-audioRank(b)||(Number(b.height)||0)-(Number(a.height)||0));}if(!sources.length){message('Потоки не знайдено',true);return}fill('voice',voices());updateSeason();message(`Знайдено варіантів: ${sources.length}`)}catch(e){message('Home Edge недоступний',true);pollTimer=setTimeout(loadJob,1800)}}
+async function resolveUrl(){const url=$('url').value.trim();if(!url)return;resetOptions();$('openButton').disabled=true;message('Шукаю відео…');try{const[r,j]=await jf('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});if(!r.ok){message(j.error||'Не вдалося прочитати посилання',true);return}currentJobId=j.job_id;loadJob()}catch(e){message('Home Edge недоступний',true)}finally{$('openButton').disabled=false}}
+async function playSelected(){const s=selectedSource();if(!s){await resolveUrl();return}$('openButton').disabled=true;message('Запускаю…');try{const[r,j]=await jf('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:currentJobId,source_id:s.source_id,subtitles:'off'})});if(r.ok){message('Відтворення запущено');setTimeout(()=>location.href='/phone',500)}else message(j.error||'Не вдалося запустити',true)}catch(e){message('Home Edge недоступний',true)}finally{$('openButton').disabled=false}}
+function resetOptions(){sources=[];for(const id of['voice','season','episode','quality']){$(id).innerHTML='';$(id).disabled=true}$('summary').className='summary-placeholder';$('summary').textContent='Шукаю доступні варіанти…'}
+function clearUrl(){$('url').value='';currentJobId=null;resetOptions();$('summary').textContent='Вставте посилання, щоб знайти відео.';$('url').focus()}
+async function refreshJob(){if(!currentJobId){message('Спочатку вставте посилання');return}resetOptions();try{await fetch('/api/jobs/'+currentJobId+'/refresh',{method:'POST'});loadJob()}catch(e){message('Home Edge недоступний',true)}}
+$('videoForm').onsubmit=e=>{e.preventDefault();playSelected()};
+$('url').addEventListener('change',()=>{if(jobData&&$('url').value!==jobData.page_url){currentJobId=null;resetOptions();$('summary').textContent='Натисніть «Відкрити відео», щоб виконати пошук.'}});
+$('voice').onchange=updateSeason;$('season').onchange=updateEpisode;$('episode').onchange=updateQuality;$('quality').onchange=updateSummary;
+if(currentJobId)loadJob();
+</script>
+</body></html>

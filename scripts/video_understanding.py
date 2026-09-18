@@ -8,10 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.operations import plan_operation
-from core.video_understanding.queue import FileQueue
-from core.video_understanding.runtime_config import load_runtime_config
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.operations import plan_operation
+from skeleton_media.video_understanding.queue import FileQueue
+from skeleton_media.video_understanding.runtime_config import load_runtime_config
 
 
 _MAX_STDIN_BYTES = 1_000_000

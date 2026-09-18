@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from core.home_edge import media_source_snapshot as snapshot
+from skeleton_media.home_edge import media_source_snapshot as snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD_PATH = ROOT / "scripts/home_edge_media_source_snapshot_signer_payload.py"

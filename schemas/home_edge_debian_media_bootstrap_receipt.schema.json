@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/alanua/Skeleton/schemas/home_edge_debian_media_bootstrap_receipt.schema.json",
+  "$id": "https://github.com/alanua/skeleton-media/schemas/home_edge_debian_media_bootstrap_receipt.schema.json",
   "title": "Home Edge Debian Media Bootstrap Public Receipt",
   "type": "object",
   "additionalProperties": false,

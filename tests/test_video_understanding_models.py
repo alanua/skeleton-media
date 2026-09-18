@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.models import (
+from skeleton_media.video_understanding.models import (
     Claim,
     ProcessingMode,
     ProcessingState,

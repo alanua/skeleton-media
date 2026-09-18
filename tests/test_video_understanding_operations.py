@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.operations import OPERATIONS, plan_operation
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.operations import OPERATIONS, plan_operation
 
 
 def test_all_required_operations_are_registered_in_contract() -> None:

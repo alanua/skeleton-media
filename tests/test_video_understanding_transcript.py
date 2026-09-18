@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.video_understanding.transcript import TranscriptSegment, assess_quality, normalize_segments, parse_transcript
+from skeleton_media.video_understanding.transcript import TranscriptSegment, assess_quality, normalize_segments, parse_transcript
 
 
 def test_vtt_and_srt_normalize_with_monotonic_timestamps(tmp_path: Path) -> None:

@@ -1,0 +1,173 @@
+{
+  "schema": "skeleton.home.native_web_icon_manifest.v1",
+  "created_at": "2026-08-13T07:54:40.073347+00:00",
+  "library": "Pictogrammers Material Design Icons",
+  "rule": "Native UI glyphs must derive from these exact web SVG assets; no Android Material, Unicode or alternate icon library substitutions.",
+  "items": [
+    {
+      "name": "home",
+      "web_source": "static/icons/mdi/home.svg",
+      "sha256": "5eca2121c84b90b747888a662364bba5a2dc21b1c995bd0adb87ac039efaeddd"
+    },
+    {
+      "name": "movie-open",
+      "web_source": "static/icons/mdi/movie-open.svg",
+      "sha256": "f5a8ec1a4ebca6a546a0face4490e239508d3131214552ff5a0a0e519b342013"
+    },
+    {
+      "name": "monitor-dashboard",
+      "web_source": "static/icons/mdi/monitor-dashboard.svg",
+      "sha256": "417bc8c05694cc0dbce1b75698ca21d3f12bb8f6bb0abe36739962610524bd0a"
+    },
+    {
+      "name": "devices",
+      "web_source": "static/icons/mdi/devices.svg",
+      "sha256": "8f56fa610caac9c000f8268eef35416085a847f25840ade94018f03e9854c057"
+    },
+    {
+      "name": "youtube",
+      "web_source": "static/icons/mdi/youtube.svg",
+      "sha256": "a06f2a1c32c10d6425c7eddd2e61eadde07b6407950df21c840da7d833e0cfb4"
+    },
+    {
+      "name": "cast-connected",
+      "web_source": "static/icons/mdi/cast-connected.svg",
+      "sha256": "4f647729e8ed21bdddfbf7ae5879d75cde0424e4eb50054a2bd29f1b35bef4fb"
+    },
+    {
+      "name": "television",
+      "web_source": "static/icons/mdi/television.svg",
+      "sha256": "989bf58def2d1eb9285cc324eda6e0668a3d2481c0de00e04da90ab867fb1be4"
+    },
+    {
+      "name": "gamepad-variant",
+      "web_source": "static/icons/mdi/gamepad-variant.svg",
+      "sha256": "582674a7f638c5e3f733173832188e230b3c74d3f9f4af3c98e4da4f4aafd225"
+    },
+    {
+      "name": "television-play",
+      "web_source": "static/icons/mdi/television-play.svg",
+      "sha256": "27886656901708170d6f274aeb081fcc37a5385f43f8144974ea98270e012247"
+    },
+    {
+      "name": "rewind-15",
+      "web_source": "static/icons/mdi/rewind-15.svg",
+      "sha256": "c372a8921efb9dbb490b3b2ae70a19ebe020ee0b9e1a9a370d0776e301d8cb1c"
+    },
+    {
+      "name": "play",
+      "web_source": "static/icons/mdi/play.svg",
+      "sha256": "0688f0a9315f57f31445e3bc4d55604e0bd5243a85de3944a668079a3e58f8ee"
+    },
+    {
+      "name": "pause",
+      "web_source": "static/icons/mdi/pause.svg",
+      "sha256": "50071f4e893478f289ea5714ccb8dda98220e9da3c88ddc1ffacb423185dea5d"
+    },
+    {
+      "name": "fast-forward-15",
+      "web_source": "static/icons/mdi/fast-forward-15.svg",
+      "sha256": "6a744babf9f073a96fe3c75f953b32b59a79730ee4e5edc6610f2c9db560ec30"
+    },
+    {
+      "name": "volume-off",
+      "web_source": "static/icons/mdi/volume-off.svg",
+      "sha256": "9f6a0f38bbcc6cb1804c48b7107f0f92222fb00683a5243330f2a52a22a6b308"
+    },
+    {
+      "name": "volume-high",
+      "web_source": "static/icons/mdi/volume-high.svg",
+      "sha256": "21d6b4495ff69fc423653f2801a422e0291dd0549cd3a4f9ee34df6a718917da"
+    },
+    {
+      "name": "history",
+      "web_source": "static/icons/mdi/history.svg",
+      "sha256": "82cfad4e8774f603a42bd37a751d2ddb0e6fc7e3e15b6c2f4ee6d36383364fb2"
+    },
+    {
+      "name": "playlist-play",
+      "web_source": "static/icons/mdi/playlist-play.svg",
+      "sha256": "d718603f668c0d8d4d6ca2a58eec0d8a4c41390bdd29312bca8d2def7fce11ef"
+    },
+    {
+      "name": "quality-high",
+      "web_source": "static/icons/mdi/quality-high.svg",
+      "sha256": "ab20a6f4f5215275ef8d0cd704ad091a98b0e2a92e812045c87e2af50651b608"
+    },
+    {
+      "name": "account-voice",
+      "web_source": "static/icons/mdi/account-voice.svg",
+      "sha256": "58387f34e036d12056fc1dd95614033dc8dcc3e2b7c1cef5ebd97961a708ba48"
+    },
+    {
+      "name": "autoplay-repeat",
+      "web_source": "static/icons/mdi/autoplay-repeat.svg",
+      "sha256": "bd04fc37895d21369f851164d97dd14d9caa551d594fddbeb8f4ce39c2d1e36f"
+    },
+    {
+      "name": "refresh",
+      "web_source": "static/icons/mdi/refresh.svg",
+      "sha256": "6d9544dbd768dcabe41bc1e58eee213e88461024d1f72496cf0a90dcb3e250b6"
+    },
+    {
+      "name": "chevron-down",
+      "web_source": "static/icons/mdi/chevron-down.svg",
+      "sha256": "07debe65109ed17516b489d94e4568036ce12dee25de25308f88195c78fd0c8e"
+    },
+    {
+      "name": "magnify",
+      "web_source": "static/icons/mdi/magnify.svg",
+      "sha256": "b124fa65c6c54b96b595f76f24ef2de114866a81cb2a5b75beaf86af964eff91"
+    },
+    {
+      "name": "close-circle-outline",
+      "web_source": "static/icons/mdi/close-circle-outline.svg",
+      "sha256": "5b9e63c4f0f1d1e3d0cc0d07190e1d288f86e191b98256bda262871a39965cab"
+    },
+    {
+      "name": "subtitles",
+      "web_source": "static/icons/mdi/subtitles.svg",
+      "sha256": "7a6086c533a29af9d2dd0b576042fa82b66a852878d3a5f46970e8b29e79a951"
+    },
+    {
+      "name": "keyboard-return",
+      "web_source": "static/icons/mdi/keyboard-return.svg",
+      "sha256": "e98ea0f48ac93eda156098495aa1a0e089d0b5d8c8f1ae16e040a2c2972aab1b"
+    },
+    {
+      "name": "chevron-up",
+      "web_source": "static/icons/mdi/chevron-up.svg",
+      "sha256": "4fcb49ff5911b934cc724c5f1455dbf0be859100bb31fdd4d7a32a5fca0fb0c4"
+    },
+    {
+      "name": "chevron-left",
+      "web_source": "static/icons/mdi/chevron-left.svg",
+      "sha256": "86069a7dce8642cf702379949d6338a25f04098903e27dd260008b8956eb979a"
+    },
+    {
+      "name": "chevron-right",
+      "web_source": "static/icons/mdi/chevron-right.svg",
+      "sha256": "391f6b0267c48b1dbb4197cde4ab7637084a34eadb1746571809f743ef0903aa"
+    },
+    {
+      "name": "lightbulb-outline",
+      "web_source": "static/icons/mdi/lightbulb-outline.svg",
+      "sha256": "3877ba341e028426dbce07f3a65023d84da273ce20def7d5990657d718b50081"
+    },
+    {
+      "name": "lightbulb-on-outline",
+      "web_source": "static/icons/mdi/lightbulb-on-outline.svg",
+      "sha256": "c1d233a37d67a340f9f42b578d70f447b4d5c22e7e96bed88dd74112f3348921"
+    },
+    {
+      "name": "dots-vertical",
+      "web_source": "static/icons/mdi/dots-vertical.svg",
+      "sha256": "dc9414bb8a2eab51eec02acc3577ead1e80f33ed7f62456426cc09754de3f6f4"
+    },
+    {
+      "name": "information-outline",
+      "web_source": "static/icons/mdi/information-outline.svg",
+      "sha256": "95566a019ea1ec39e3095462fca13aae958ca0da682eeeb6a86d230a5fde040a"
+    }
+  ]
+}

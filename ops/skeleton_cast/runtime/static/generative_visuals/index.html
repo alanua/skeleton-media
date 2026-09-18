@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skeleton Ambient Visuals</title><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#03050a;cursor:none}canvas{position:fixed;inset:0;width:100vw;height:100vh;image-rendering:auto}#stats{display:none}
+</style></head><body><canvas id="c" width="800" height="450"></canvas><output id="stats"></output><script>
+(()=>{'use strict';
+const C=document.getElementById('c'),X=C.getContext('2d',{alpha:false,desynchronized:true});
+const W=C.width,H=C.height,Q=new URLSearchParams(location.search),rotate=Q.get('rotate')!=='0',requested=Q.get('scene')||'liquid_ink';
+const SCENES=['liquid_ink','aurora_ribbons','nebular_flow']; let seed=(Number(Q.get('seed'))>>>0)||0x72c9a41d;
+function rnd(){seed+=0x6D2B79F5;let t=seed;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}
+const phase=Array.from({length:32},()=>rnd()*Math.PI*2),speed=Array.from({length:32},()=>.45+rnd()*1.1);
+const palettes={ink:[['#061121','#113b67','#09a6ad','#7a2fe0','#ff5d6c'],['#07101f','#263b8f','#00b6c7','#d44cb9','#ff8b52'],['#050b18','#15476c','#36b5a4','#835bd7','#f08c48']],aurora:[['#020916','#0e3a52','#13d8a2','#55a8ff','#b64df0'],['#030914','#17385c','#00c9b7','#76e4ff','#a562ff']],nebula:[['#03040b','#17204f','#5243a7','#bf4b9c','#f19b62'],['#03050c','#17345b','#257fa0','#8647ba','#ed6e83']]};
+const pick=(a,i)=>a[i%a.length]; const pInk=palettes.ink[Math.floor(rnd()*palettes.ink.length)],pAur=palettes.aurora[Math.floor(rnd()*palettes.aurora.length)],pNeb=palettes.nebula[Math.floor(rnd()*palettes.nebula.length)];
+function hslHex(h,s=.82,l=.58){h=((h%360)+360)%360;const a=s*Math.min(l,1-l),f=n=>{const k=(n+h/30)%12,c=l-a*Math.max(-1,Math.min(k-3,9-k,1));return Math.round(255*c).toString(16).padStart(2,'0')};return `#${f(0)}${f(8)}${f(4)}`}
+const inkMotion=Array.from({length:9},(_,i)=>({ax:.23+rnd()*.16,ay:.22+rnd()*.15,bx:.08+rnd()*.10,by:.07+rnd()*.11,fx:.012+rnd()*.018,fy:.011+rnd()*.020,phase:rnd()*Math.PI*2,hue:rnd()*360,size:.72+rnd()*.42}));
+const bgCache=new Map(),glowCache=new Map();
+function hex(c,a){let h=c.replace('#','');if(h.length===3)h=h.split('').map(x=>x+x).join('');return `rgba(${parseInt(h.slice(0,2),16)},${parseInt(h.slice(2,4),16)},${parseInt(h.slice(4,6),16)},${Math.max(0,Math.min(1,a))})`}
+function bg(a,b){const k=a+'|'+b;let g=bgCache.get(k);if(!g){g=X.createLinearGradient(0,0,W,H);g.addColorStop(0,a);g.addColorStop(.52,b);g.addColorStop(1,'#020308');bgCache.set(k,g)}X.fillStyle=g;X.fillRect(0,0,W,H)}
+function radialSprite(stops){const c=document.createElement('canvas');c.width=c.height=192;const q=c.getContext('2d');const g=q.createRadialGradient(96,96,0,96,96,96);for(const [at,color] of stops)g.addColorStop(at,color);q.fillStyle=g;q.fillRect(0,0,192,192);return c}
+function glowSprite(c,a){const k=c+'|'+a.toFixed(3);let spr=glowCache.get(k);if(!spr){spr=radialSprite([[0,hex(c,a)],[.35,hex(c,a*.62)],[.72,hex(c,a*.18)],[1,hex(c,0)]]);glowCache.set(k,spr)}return spr}
+function glow(x,y,r,c,a){const spr=glowSprite(c,a);X.drawImage(spr,x-r,y-r,r*2,r*2)}
+function lineGradient(colors,stops){const g=X.createLinearGradient(0,0,W,0);for(let i=0;i<stops.length;i++)g.addColorStop(stops[i][0],hex(colors[i],stops[i][1]));return g}
+const inkGrads=Array.from({length:5},(_,i)=>lineGradient([pInk[(i+1)%5],pInk[(i+2)%5],pInk[(i+3)%5],pInk[(i+4)%5]],[[0,0],[.28,.10],[.68,.08],[1,0]]));
+const aurGrads=Array.from({length:6},(_,i)=>lineGradient([pAur[(i+1)%5],pAur[(i+1)%5],pAur[(i+2)%5],pAur[(i+3)%5],pAur[(i+4)%5]],[[0,0],[.18,.18],[.48,.25],[.78,.16],[1,0]]));
+const veil=X.createRadialGradient(W*.5,H*.48,70,W*.5,H*.48,W*.7);veil.addColorStop(0,'rgba(0,0,0,0)');veil.addColorStop(1,'rgba(0,0,0,.38)');
+const horizon=X.createLinearGradient(0,H*.55,0,H);horizon.addColorStop(0,'rgba(1,8,18,0)');horizon.addColorStop(1,'rgba(1,4,10,.65)');
+const vign=X.createRadialGradient(W*.5,H*.5,80,W*.5,H*.5,W*.66);vign.addColorStop(0,'rgba(0,0,0,0)');vign.addColorStop(1,'rgba(0,0,0,.48)');
+const nebCloud=Array.from({length:4},(_,i)=>radialSprite([[0,hex(pNeb[(i+2)%5],.08)],[.55,hex(pNeb[(i+3)%5],.05)],[1,hex(pNeb[(i+4)%5],0)]]));
+function liquid(t){
+ t*=3.0153;
+ bg('#030711','#07111d'); X.globalCompositeOperation='screen';
+ for(let i=0;i<9;i++){const m=inkMotion[i],u=t*m.fx*speed[i]+m.phase,v=t*m.fy*(1.18+.11*(i%3))+phase[i+9],w=t*(.0065+.0013*(i%4))+phase[(i+17)%32];const x=W*(.5+m.ax*Math.sin(u)+m.bx*Math.sin(v*1.73+w)+.055*Math.sin(w*2.31+i)),y=H*(.5+m.ay*Math.cos(v)+m.by*Math.sin(u*.81-w*1.27)+.05*Math.cos(w*2.07-i));const pulse=.72+.34*(.5+.5*Math.sin(t*(.020+.003*(i%3))+phase[i+18]))+.18*Math.sin(w*1.61);const r=(105+i*8)*m.size*Math.max(.55,pulse);const hue=m.hue+58*Math.sin(t*(.010+.0015*(i%4))+m.phase)+31*Math.sin(w*.73+i);const c=hslHex(Math.round(hue/8)*8,.78+.08*Math.sin(w),.54+.08*Math.sin(w*.61+1.4));const a=.20+.09*(.5+.5*Math.sin(t*.017+phase[i+5]));glow(x,y,r,c,a)}
+ X.globalCompositeOperation='lighter';X.lineCap='round';
+ for(let i=0;i<5;i++){const y=H*(.18+i*.16),w=70+i*9;const gr=inkGrads[i];X.strokeStyle=gr;X.lineWidth=w;X.beginPath();X.moveTo(-80,y+35*Math.sin(t*.018+phase[i]));X.bezierCurveTo(W*.25,y-100*Math.sin(t*.013+phase[i+3]),W*.72,y+105*Math.cos(t*.011+phase[i+6]),W+80,y+25*Math.sin(t*.015+phase[i+9]));X.stroke()}
+ X.globalCompositeOperation='source-over';X.fillStyle=veil;X.fillRect(0,0,W,H)
+}
+function aurora(t){
+ bg('#020712','#061122');X.globalCompositeOperation='screen';
+ glow(W*.32,H*.25,660,pAur[1],.13);glow(W*.72,H*.46,720,pAur[4],.10);X.lineCap='round';X.lineJoin='round';
+ for(let i=0;i<6;i++){const base=H*(.18+i*.105),wave=(55+i*8)*2,shift=(t*3.0153)*(.016+.002*i)+phase[i];const path=new Path2D();path.moveTo(-80,base+Math.sin(shift)*wave);path.bezierCurveTo(W*.18,base-240*Math.sin(shift*.8+1.2),W*.43,base+260*Math.cos(shift*.67+.5),W*.60,base-90*Math.sin(shift*.91));path.bezierCurveTo(W*.77,base-270*Math.cos(shift*.74+1.5),W*.91,base+180*Math.sin(shift*.63+.7),W+80,base+Math.cos(shift)*wave);
+ const gr=aurGrads[i];
+ X.strokeStyle=gr;X.lineWidth=(74-i*5)*2;X.globalAlpha=.33;X.stroke(path);X.lineWidth=(34-i*2)*2;X.globalAlpha=.42;X.stroke(path);X.lineWidth=18;X.globalAlpha=.60;X.stroke(path)}
+ X.globalAlpha=1;X.globalCompositeOperation='source-over';X.fillStyle=horizon;X.fillRect(0,H*.52,W,H*.48)
+}
+const stars=Array.from({length:130},()=>({x:rnd()*W,y:rnd()*H,r:.3+rnd()*1.4,a:.15+rnd()*.55}));
+function nebula(t){
+ t*=3.0153;
+ bg('#02040b','#080b1b');X.globalCompositeOperation='screen';
+ for(let i=0;i<10;i++){const u=t*(.007+.0015*(i%4))+phase[i],x=W*(.5+.38*Math.sin(u*speed[i])),y=H*(.48+.34*Math.cos(u*.77+phase[i+10])),r=170+i*16+35*Math.sin(t*.012+phase[i+20]);glow(x,y,r,pick(pNeb,i+1),.12+.025*(i%4))}
+ X.globalCompositeOperation='lighter';for(let i=0;i<4;i++){const a=t*.006+phase[i],cx=W*(.5+.08*Math.sin(a)),cy=H*(.48+.08*Math.cos(a));X.save();X.translate(cx,cy);X.rotate(a*.13+i*.72);X.scale(1.8,.42);X.drawImage(nebCloud[i],-270,-270,540,540);X.restore()}
+ X.globalCompositeOperation='source-over';for(const s of stars){const tw=s.a*(.7+.3*Math.sin(t*.5+s.x*.01));X.fillStyle=`rgba(220,232,255,${tw})`;X.beginPath();X.arc(s.x,s.y,s.r,0,Math.PI*2);X.fill()}
+ X.fillStyle=vign;X.fillRect(0,0,W,H)
+}
+function draw(id,t){if(id==='aurora_ribbons')aurora(t);else if(id==='nebular_flow')nebula(t);else liquid(t)}
+let frames=0,mark=performance.now(),fps=0;function frame(now){const t=now/1000;let id=SCENES.includes(requested)?requested:'liquid_ink';let fade=0;if(rotate){const span=60,local=t%span,idx=Math.floor(t/span)%SCENES.length;id=SCENES[idx];fade=local<2?1-local/2:local>span-2?(local-(span-2))/2:0}draw(id,t);if(fade>0){X.fillStyle=`rgba(2,4,9,${.9*fade})`;X.fillRect(0,0,W,H)}frames++;if(now-mark>=1000){fps=frames*1000/(now-mark);frames=0;mark=now;document.getElementById('stats').value=`${id}|${fps.toFixed(1)}`;document.body.dataset.scene=id;document.body.dataset.fps=fps.toFixed(1);document.title=`Skeleton Ambient · ${id} · ${fps.toFixed(1)} FPS`}requestAnimationFrame(frame)}requestAnimationFrame(frame);
+})();</script></body></html>

@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 
 from core.private_memory_stack import PrivateMemoryStack
-from core.video_understanding.live_runtime import (
+from skeleton_media.video_understanding.live_runtime import (
     build_live_runtime,
     doctor_live_runtime,
     resolve_existing_private_memory_root,
     synthetic_memory_roundtrip,
 )
-from core.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.models import VideoUnderstandingError
 
 
 def _runtime_config(tmp_path: Path) -> Path:

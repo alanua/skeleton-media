@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 import pytest
 
-from core.home_edge import debian_media_bootstrap as bootstrap
+from skeleton_media.home_edge import debian_media_bootstrap as bootstrap
 from core.home_edge.executor import HomeEdgeExecReceipt, HomeEdgeExecRequest, sign_request
 
 
@@ -275,9 +275,9 @@ def test_openbox_does_not_launch_pipewire_and_user_units_use_session_bus() -> No
     desired_openbox = script.split("desired_openbox='", 1)[1].split("'\n", 1)[0]
     assert "pipewire" not in desired_openbox.lower()
     assert "wireplumber" not in desired_openbox.lower()
-    assert "[ -S /run/user/1000/bus ]" in script
-    assert "runuser -u oleksii -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus systemctl --user enable --now pipewire.service pipewire-pulse.service wireplumber.service" in script
-    assert "systemctl --user -M oleksii@" not in script
+    assert '[ -S "/run/user/$DESKTOP_UID/bus" ]' in script
+    assert 'runuser -u "$DESKTOP_USER" -- env XDG_RUNTIME_DIR="/run/user/$DESKTOP_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$DESKTOP_UID/bus" systemctl --user enable --now pipewire.service pipewire-pulse.service wireplumber.service' in script
+    assert "systemctl --user -M " not in script
 
 
 def test_mandatory_services_root_ancestry_and_vaapi_checks_are_strict() -> None:
@@ -296,7 +296,7 @@ def test_mandatory_services_root_ancestry_and_vaapi_checks_are_strict() -> None:
 
 
 def test_public_receipt_rejects_private_values_and_keeps_physical_pending() -> None:
-    receipt = public_receipt(stable_reason="/home/skeleton/private")
+    receipt = public_receipt(stable_reason="/home/example/private")
     with pytest.raises(ValueError, match="receipt_field_not_public_safe"):
         bootstrap.sanitize_public_receipt(receipt)
 
@@ -306,4 +306,4 @@ def test_public_receipt_rejects_private_values_and_keeps_physical_pending() -> N
     assert "physical_video_status=physical_pending" in lines
     assert "/home" not in lines
     assert "secret" not in lines.lower()
-    assert "oleksii" not in lines
+    assert "private-user" not in lines

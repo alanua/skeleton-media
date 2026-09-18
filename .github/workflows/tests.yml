@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Skeleton control-plane dependency
+        run: python -m pip install "git+https://github.com/alanua/Skeleton.git@1f3d2d8310c9b35b5be6402eee555e45634c0c2c"
+      - name: Install Skeleton Media
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest -q

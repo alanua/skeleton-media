@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<title>Відео · Home</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/app-color-180.png">
+<link rel="stylesheet" href="/static/ui.css?v=132">
+</head>
+<body class="video-page">
+<div id="mediaAmbientBg" class="media-ambient-bg empty" aria-hidden="true"></div>
+<header class="app-tab-header">
+  <div class="app-tab-copy"><strong>Відео</strong><small><span>Home Edge · Підключено</span><span class="online-dot"></span></small></div>
+  <div class="header-actions" data-home-header-actions></div>
+</header>
+<main class="detail-main video-main">
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+  <section class="card form-card">
+    <form id="videoForm">
+      <div id="catalogCard" class="catalog-card no-poster">
+        <img id="catalogPoster" alt="Постер" hidden>
+        <div class="catalog-copy"><strong id="catalogTitle">Відео</strong><span id="catalogMeta">HOME EDGE</span><p id="catalogOverview">Вставте посилання, щоб знайти відео.</p></div>
+      </div>
+      <div id="catalogLinks" class="catalog-provider-links" hidden>
+        <button id="traktButton" class="catalog-provider-btn trakt" type="button" hidden>Trakt</button>
+        <button id="moviebaseButton" class="catalog-provider-btn moviebase" type="button" hidden>Moviebase</button>
+      </div>
+      <input id="url" type="hidden" value="">
+      <div class="select-list video-select-list">
+        <div class="select-row" id="historyRow">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/history.svg')"></span>
+          <div class="select-box"><label for="historyPicker">Історія</label><select id="history" hidden disabled><option value="">Завантажую…</option></select><button id="historyPicker" class="history-picker" type="button" disabled aria-haspopup="dialog" aria-controls="historySheet"><span id="historyPickerText">Завантажую…</span><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></button></div>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/playlist-play.svg')"></span>
+          <div class="select-box"><label for="season">Сезон</label><div class="select-wrap"><select id="season" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/playlist-play.svg')"></span>
+          <div class="select-box"><label for="episode">Серія</label><div class="select-wrap"><select id="episode" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/quality-high.svg')"></span>
+          <div class="select-box"><label for="quality">Якість</label><div class="select-wrap"><select id="quality" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+        <div class="select-row">
+          <span class="mdi" style="--icon:url('/static/icons/mdi/account-voice.svg')"></span>
+          <div class="select-box"><label for="voice">Доріжка</label><div class="select-wrap"><select id="voice" disabled></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+        <div class="select-row" id="audioRow" hidden>
+          <span class="mdi" style="--icon:url('/static/icons/mdi/volume-high.svg')"></span>
+          <div class="select-box"><label for="audioTrack">Аудіодоріжка</label><div class="select-wrap"><select id="audioTrack"></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+        <div class="select-row" id="subtitleRow" hidden>
+          <span class="mdi" style="--icon:url('/static/icons/mdi/subtitles.svg')"></span>
+          <div class="select-box"><label for="subtitleTrack">Субтитри</label><div class="select-wrap"><select id="subtitleTrack"></select><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></div></div>
+        </div>
+      </div>
+
+      <div class="video-actions" aria-label="Дії відтворення">
+        <button class="video-action video-action-play" id="openButton" type="submit" disabled aria-label="Відтворити" title="Відтворити"><span class="mdi" style="--icon:url('/static/icons/mdi/play.svg')"></span></button>
+        <button class="video-action video-action-reset" id="resetButton" type="button" onclick="clearUrl()" aria-label="Скинути" title="Скинути"><span class="mdi" style="--icon:url('/static/icons/mdi/refresh.svg')"></span></button>
+        <button class="video-action video-action-continue" id="continueButton" type="button" onclick="continueSaved()" disabled aria-label="Продовжити зі збереженого місця" title="Продовжити зі збереженого місця"><span class="mdi" style="--icon:url('/static/icons/mdi/history.svg')"></span></button>
+        <label class="video-autoplay-control" id="autoplayControl" title="Автоматично відтворювати наступну серію">
+          <span class="mdi video-autoplay-icon" style="--icon:url('/static/icons/mdi/autoplay-repeat.svg')"></span>
+          <span class="switch video-autoplay-switch"><input id="autoplayToggle" type="checkbox" aria-label="Автопродовження серіалу"><span class="track"><span class="thumb-switch"></span></span></span>
+        </label>
+      </div>
+    </form>
+  </section>
+</main>
+<div id="historySheet" class="history-sheet" hidden>
+  <div id="historySheetBackdrop" class="history-sheet-backdrop"></div>
+  <section class="history-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="historySheetTitle">
+    <header class="history-sheet-head"><strong id="historySheetTitle">Історія</strong><button id="historySheetClose" type="button" aria-label="Закрити"><span class="mdi" style="--icon:url('/static/icons/mdi/close-circle-outline.svg')"></span></button></header>
+    <div class="history-sheet-tools">
+      <label class="history-search" for="historySearch"><span class="mdi" style="--icon:url('/static/icons/mdi/magnify.svg')"></span><input id="historySearch" type="search" inputmode="search" autocomplete="off" spellcheck="false" placeholder="Пошук в історії" aria-label="Пошук в історії"></label>
+      <div class="history-sort-note"><span>Останні переглянуті — першими</span><span id="historyResultCount" aria-live="polite"></span></div>
+    </div>
+    <div id="historyCards" class="history-card-list"></div>
+  </section>
+</div>
+<nav class="bottom-nav" aria-label="Навігація">
+  <a class="nav-item" href="/phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></a>
+  <a class="nav-item active" href="/video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></a>
+  <a class="nav-item" href="/sk"><span class="mdi" style="--icon:url('/static/icons/mdi/monitor-dashboard.svg')"></span><span>СК</span></a>
+  <a class="nav-item" href="/devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></a>
+</nav>
+<script src="/static/home-shell.js?v=130"></script>
+<script>
+const $=id=>document.getElementById(id);
+let currentJobId=null,sources=[],jobData=null,pollTimer=null,noticeTimer=null,currentPlayer=null,locked=false,restoring=false,historyItems=[],historyEditMode=false,historySearchQuery='',autoplayEnabled=false;
+const unique=a=>[...new Set(a)];
+const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+const episodeNumber=x=>{const m=String(x).match(/\d+/);return m?Number(m[0]):9999};
+const voiceOf=s=>s.group||s.translation||'Основне джерело';
+const seasonOf=s=>String(s.season||'1');
+const episodeOf=s=>String(s.episode||'1');
+const durationOf=s=>Number(s.duration)||0;
+const isTrailer=s=>{const d=durationOf(s);return d>0&&d<600};
+const clock=d=>{d=Math.max(0,Math.round(Number(d)||0));const h=Math.floor(d/3600),m=Math.floor((d%3600)/60),x=d%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(x).padStart(2,'0')}`:`${m}:${String(x).padStart(2,'0')}`};
+const qualityOf=s=>{const q=s.quality||'Авто';return isTrailer(s)?`${q} · Трейлер ${clock(durationOf(s))}`:q};
+function message(text,error=false){clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').className='notice show'+(error?' error':'');noticeTimer=setTimeout(()=>$('notice').className='notice',error?4500:1800)}
+async function jf(url,opt){const r=await fetch(url,opt);let j={};try{j=await r.json()}catch(e){j={error:r.status===404?'Збережений запис більше недоступний':`Помилка Home Edge (${r.status})`}}return[r,j]}
+async function readSession(){try{const[r,j]=await jf('/api/video/selection');return r.ok?j:{}}catch(e){return{}}}
+async function writeSession(sourceOverride=null){if(!currentJobId)return;const s=sourceOverride||selectedSource();try{await jf('/api/video/selection',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:currentJobId,locked,url:$('url').value.trim(),voice:$('voice').value,season:$('season').value,episode:$('episode').value,source_id:s?.source_id||'',title:jobData?.title||''})})}catch(e){}}
+async function clearSession(){try{await fetch('/api/video/selection',{method:'DELETE'})}catch(e){}}
+function setLocked(value){locked=!!value;setResetReady()}
+function setReady(value){$('openButton').disabled=!value;$('continueButton').disabled=!currentJobId}
+function setResetReady(){$('resetButton').disabled=!(currentJobId||$('url').value.trim()||sources.length)}
+function setWorkTitle(value){}
+function choose(el,preferred){if(preferred&&[...el.options].some(o=>o.value===String(preferred)))el.value=String(preferred)}
+function fillValues(id,values,preferred=''){const el=$(id);el.innerHTML=values.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');el.disabled=!values.length;choose(el,preferred)}
+function fillOptions(id,items,preferred=''){const el=$(id);el.innerHTML=items.map(v=>`<option value="${esc(v.value)}">${esc(v.label)}</option>`).join('');el.disabled=!items.length;choose(el,preferred)}
+function seasons(){return unique(sources.map(seasonOf)).sort((a,b)=>episodeNumber(a)-episodeNumber(b))}
+function episodes(se){return unique(sources.filter(s=>seasonOf(s)===se).map(episodeOf)).sort((a,b)=>episodeNumber(a)-episodeNumber(b)||a.localeCompare(b,'uk'))}
+function qualities(se,ep){const values=unique(sources.filter(s=>seasonOf(s)===se&&episodeOf(s)===ep).map(qualityOf));return values.sort((a,b)=>{const ah=Math.max(0,...sources.filter(s=>seasonOf(s)===se&&episodeOf(s)===ep&&qualityOf(s)===a).map(s=>Number(s.height)||0));const bh=Math.max(0,...sources.filter(s=>seasonOf(s)===se&&episodeOf(s)===ep&&qualityOf(s)===b).map(s=>Number(s.height)||0));return bh-ah||a.localeCompare(b,'uk')})}
+function voices(se,ep,q){return unique(sources.filter(s=>seasonOf(s)===se&&episodeOf(s)===ep&&qualityOf(s)===q).map(voiceOf)).sort((a,b)=>a.localeCompare(b,'uk'))}
+function ukCount(n,one,few,many){const x=Math.abs(n)%100,y=x%10;return `${n} ${x>10&&x<20?many:y===1?one:y>=2&&y<=4?few:many}`}
+function optionBreakdown(){const seasonCount=seasons().length,episodeCount=unique(sources.map(s=>`${seasonOf(s)}|${episodeOf(s)}`)).length,tracks=unique(sources.map(voiceOf)).length,qualityCount=unique(sources.map(qualityOf)).length;return `${ukCount(seasonCount,'сезон','сезони','сезонів')} · ${ukCount(episodeCount,'серія','серії','серій')} · ${ukCount(tracks,'доріжка','доріжки','доріжок')} · ${ukCount(qualityCount,'якість','якості','якостей')}`}
+function candidates(){return sources.filter(s=>seasonOf(s)===$('season').value&&episodeOf(s)===$('episode').value&&qualityOf(s)===$('quality').value&&voiceOf(s)===$('voice').value).sort((a,b)=>Number(isTrailer(a))-Number(isTrailer(b))||(Number(b.height)||0)-(Number(a.height)||0))}
+function selectedSource(){return candidates()[0]||null}
+function hideTracks(){$('audioRow').hidden=true;$('subtitleRow').hidden=true;$('audioTrack').innerHTML='';$('subtitleTrack').innerHTML='';$('audioTrack').disabled=true;$('subtitleTrack').disabled=true}
+function blankDisabled(id,value='off'){const el=$(id);el.innerHTML=`<option value="${esc(value)}"></option>`;el.value=value;el.disabled=true}
+function trackLabel(t,index){const bits=[t.title,t.lang,t['audio-channels']||t['demux-channels'],t.codec].filter(Boolean);return bits.length?bits.join(' · '):`Доріжка ${index+1}`}
+function renderTracks(){
+  hideTracks();
+  const s=selectedSource();
+  if(!s)return;
+  $('subtitleRow').hidden=false;
+  const active=!!(currentPlayer?.running&&currentPlayer.job_id===currentJobId&&currentPlayer.source_id===s.source_id);
+  if(!active){blankDisabled('subtitleTrack');return}
+  const audio=Array.isArray(currentPlayer.audio_tracks)?currentPlayer.audio_tracks:[];
+  const subs=Array.isArray(currentPlayer.subtitle_tracks)?currentPlayer.subtitle_tracks:[];
+  if(audio.length>1){fillOptions('audioTrack',audio.map((t,i)=>({value:String(t.id),label:trackLabel(t,i)})),String(currentPlayer.aid??''));$('audioRow').hidden=false;$('audioTrack').disabled=false}
+  if(subs.length){fillOptions('subtitleTrack',[{value:'off',label:'Вимкнено'},...subs.map((t,i)=>({value:String(t.id),label:trackLabel(t,i)}))],currentPlayer.sid===false||currentPlayer.sid==null?'off':String(currentPlayer.sid));$('subtitleTrack').disabled=false}
+  else{blankDisabled('subtitleTrack')}
+}
+function selectedLabel(id){const el=$(id),option=el?.selectedOptions?.[0];return String(option?.textContent||'').trim()}
+function updateSummary(){}
+function updateVoice(preferredVoice='',preferredSource=''){const values=voices($('season').value,$('episode').value,$('quality').value);fillValues('voice',values,preferredVoice);if(preferredSource){const active=sources.find(s=>s.source_id===preferredSource);if(active&&values.includes(voiceOf(active)))$('voice').value=voiceOf(active)}renderTracks();updateSummary();if(!restoring)writeSession()}
+function updateQuality(preferredQuality='',preferredVoice='',preferredSource=''){fillValues('quality',qualities($('season').value,$('episode').value),preferredQuality);updateVoice(preferredVoice,preferredSource)}
+function updateEpisode(preferredEpisode='',preferredQuality='',preferredVoice='',preferredSource=''){fillValues('episode',episodes($('season').value),preferredEpisode);updateQuality(preferredQuality,preferredVoice,preferredSource)}
+function currentMediaType(){const type=String(jobData?.catalog?.media_type||jobData?.history_media_type||'').toLowerCase();if(type)return type;const item=historyItems.find(x=>x.history_id===String(jobData?.history_id||$('history').value||''));if(item?.media_type)return String(item.media_type).toLowerCase();return sources.length&&sources.every(s=>String(episodeOf(s)).toLowerCase()==='фільм')?'movie':''}
+function updateAutoplayUi(){const control=$('autoplayControl'),toggle=$('autoplayToggle'),series=currentMediaType()==='tv';toggle.checked=!!autoplayEnabled;toggle.disabled=!series;control.classList.toggle('disabled',!series);control.classList.toggle('active',series&&autoplayEnabled);control.title=series?(autoplayEnabled?'Автопродовження увімкнено':'Автопродовження вимкнено'):'Автопродовження доступне лише для серіалів'}
+async function loadAutoplay(){try{const[r,j]=await jf('/api/video/autoplay',{cache:'no-store'});if(r.ok)autoplayEnabled=!!j.enabled}catch(e){}updateAutoplayUi()}
+async function setAutoplay(value){const toggle=$('autoplayToggle');toggle.disabled=true;try{const[r,j]=await jf('/api/video/autoplay',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!!value})});if(!r.ok)throw new Error(j.error||'Не вдалося змінити автопродовження');autoplayEnabled=!!j.enabled;message(autoplayEnabled?'Автопродовження увімкнено':'Автопродовження вимкнено')}catch(e){message(e.message||'Не вдалося змінити автопродовження',true)}finally{updateAutoplayUi()}}
+function updateSeason(preferredSeason='',preferredEpisode='',preferredQuality='',preferredVoice='',preferredSource=''){const values=seasons();if(currentMediaType()==='movie'&&values.length){const value=values.includes(String(preferredSeason))?String(preferredSeason):values[0];fillOptions('season',[{value,label:''}],value);$('season').disabled=true}else fillValues('season',values,preferredSeason);updateEpisode(preferredEpisode,preferredQuality,preferredVoice,preferredSource);if(jobData)renderCatalog(jobData)}
+async function loadPlayer(){
+  try{
+    const [r,j]=await jf('/api/player');
+    if(!r.ok)return;
+    currentPlayer=j;
+    if(j.job_id===currentJobId)setLocked(true);
+    renderTracks();
+    if(locked)await writeSession();
+  }catch(e){
+    console.warn('player status unavailable',e);
+  }
+}
+function setAmbientPoster(url){const bg=$('mediaAmbientBg');if(!bg)return;const value=String(url||'').trim();bg.classList.toggle('empty',!value);bg.style.backgroundImage=value?'url("'+value.replace(/["\\]/g,'')+'")':''}
+function sourceHost(url){try{return new URL(String(url||'')).hostname.replace(/^www\./,'')}catch(e){return''}}
+function usefulTitle(value){const title=String(value||'').trim();return /^Пошук потоків/i.test(title)?'':title}
+function contentTypeLabel(value,mediaType=''){const labels={movie:'Фільм',series:'Серіал',anime_movie:'Аніме-фільм',anime_series:'Аніме-серіал',animation_movie:'Мультфільм',animation_series:'Мультсеріал',documentary_movie:'Документальний фільм',documentary_series:'Документальний серіал'};return labels[String(value||'').toLowerCase()]||(mediaType==='tv'?'Серіал':mediaType==='movie'?'Фільм':'')}
+function metadataRuntimeLabel(x={}){return String(x?.runtime_label||x?.details?.runtime_label||'').trim()}
+function externalOpen(url){if(!url)return;try{if(window.HomeApp&&typeof window.HomeApp.openExternal==='function'&&window.HomeApp.openExternal(url))return}catch(e){}location.href=url}
+async function updateCatalogLinks(j={}){const box=$('catalogLinks'),tb=$('traktButton'),mb=$('moviebaseButton');if(!box||!tb||!mb)return;tb.hidden=true;mb.hidden=true;box.hidden=true;const id=String(j?.job_id||currentJobId||'');if(!id)return;try{const[r,x]=await jf('/api/video/external-links?job_id='+encodeURIComponent(id),{cache:'no-store'});if(!r.ok)return;if(x.trakt_url){tb.hidden=false;tb.onclick=()=>externalOpen(x.trakt_url)}if(x.moviebase_url){mb.hidden=false;mb.onclick=()=>externalOpen(x.moviebase_url)}box.hidden=tb.hidden&&mb.hidden}catch(e){}}
+function selectedSeasonPoster(j={},season=''){
+  const c=j?.catalog||{},maps=[c.season_posters,j?.season_posters],active=String(season||$('season')?.value||(currentPlayer?.job_id===currentJobId?currentPlayer?.season:'')||j?.season||'');
+  for(const map of maps){if(map&&active&&map[active])return String(map[active])}
+  const source=sources.find(item=>seasonOf(item)===active&&(item.season_poster||(item.poster_scope==='season'&&item.poster)));
+  return String(source?.season_poster||(source?.poster_scope==='season'?source?.poster:'')||c.poster||j?.poster||'').trim();
+}
+function renderCatalog(j={},statusText=''){
+  const c=j?.catalog||{},url=String(j?.page_url||$('url')?.value||''),host=sourceHost(url),card=$('catalogCard'),img=$('catalogPoster');
+  const title=String(c.title||usefulTitle(j?.title)||host||'Відео').trim();
+  const type=contentTypeLabel(c.content_type||j?.content_type,c.media_type||j?.history_media_type);
+  const meta=[type,c.year,metadataRuntimeLabel(c)].filter(Boolean).join(' · ');
+  const fallback=statusText||j?.error||(url?'':'Оберіть твір з історії або надішліть його через «Поділитися».');
+  const overview=String(c.overview||j?.overview||j?.description||fallback||'').trim();
+  const poster=selectedSeasonPoster(j);
+  setAmbientPoster(poster);
+  card.hidden=false;card.classList.toggle('no-poster',!poster);
+  $('catalogTitle').textContent=title;$('catalogMeta').textContent=meta;$('catalogMeta').hidden=!meta;$('catalogOverview').textContent=overview.slice(0,420);$('catalogOverview').hidden=!overview;
+  if(poster){img.hidden=false;img.src=poster}else{img.hidden=true;img.removeAttribute('src')}
+}
+async function loadJob(preferred={}){
+  if(!currentJobId)return;
+  clearTimeout(pollTimer);
+  setReady(false);
+  setResetReady();
+  try{
+    const [r,j]=await jf('/api/jobs/'+currentJobId);
+    if(!r.ok){
+      await clearSession();
+      currentJobId=null;
+      resetOptions('Вставте посилання, щоб знайти відео.');
+      message(j.error||'Збережений вибір більше недоступний',true);
+      return;
+    }
+    jobData=j;renderCatalog(j);updateCatalogLinks(j);updateAutoplayUi();
+    if(j.page_url)$('url').value=j.page_url;
+    setWorkTitle(j.title);
+    if(['resolving','discovering','identified','cached_mapping_checked','searching_sources','candidates_found'].includes(j.status)){
+      const searching=j.status==='searching_sources'?'Шукаю перевірені українські стріми…':'Визначаю твір і перевіряю джерела…';message(searching);renderCatalog(j,searching);
+      pollTimer=setTimeout(()=>loadJob(preferred),700);
+      return;
+    }
+    if(j.status==='no_verified_sources'){
+      sources=[];message('Перевірених українських стрімів поки немає.');renderCatalog(j,'Перевірених українських стрімів поки немає.');
+      return;
+    }
+    if(['error','provider_error'].includes(j.status)){
+      message(j.error||'Джерело тимчасово недоступне',true);renderCatalog(j,j.error||'Джерело тимчасово недоступне');
+      return;
+    }
+    sources=(j.sources||[]).sort((a,b)=>Number(isTrailer(a))-Number(isTrailer(b))||(Number(b.height)||0)-(Number(a.height)||0));
+    if(!sources.length){
+      message('Потоки не знайдено',true);renderCatalog(j,'Потоки не знайдено.');
+      return;
+    }
+    if(preferred.source_id){
+      const active=sources.find(x=>x.source_id===preferred.source_id);
+      if(active){
+        preferred={...preferred,voice:voiceOf(active),season:seasonOf(active),episode:episodeOf(active),quality:qualityOf(active)};
+      }
+    }
+    restoring=true;
+    updateSeason(preferred.season,preferred.episode,preferred.quality,preferred.voice,preferred.source_id);
+    restoring=false;
+    if(j.history_id&&[...$('history').options].some(o=>o.value===j.history_id))setHistorySelection(j.history_id);
+    await writeSession();
+    await loadPlayer();
+    setReady(!!selectedSource());
+    const readyText=optionBreakdown();renderCatalog(j);message(readyText);
+  }catch(e){
+    setReady(false);
+    message('Home Edge недоступний',true);
+    pollTimer=setTimeout(()=>loadJob(preferred),1800);
+  }
+}
+function seasonLabel(values=[]){const nums=values.map(Number).filter(Number.isFinite).sort((a,b)=>a-b);if(!nums.length)return'';if(nums.length===1)return`сезон ${nums[0]}`;const consecutive=nums.every((n,i)=>i===0||n===nums[i-1]+1);return consecutive?`сезони ${nums[0]}–${nums[nums.length-1]}`:`сезони ${nums.join(', ')}`}
+function historyTypeLabel(item){return contentTypeLabel(item?.content_type,item?.media_type)}
+function historyItemLabel(item){if(!item)return'Оберіть збережений твір';return[item.title,item.year||'',item.media_type==='tv'?seasonLabel(item.seasons||[]):'',metadataRuntimeLabel(item)].filter(Boolean).join(' · ')}
+function setHistorySelection(historyId=''){const item=historyItems.find(x=>x.history_id===historyId);$('history').value=item?historyId:'';$('historyPickerText').textContent=historyItemLabel(item)}
+function normalizeHistorySearch(value=''){return String(value||'').normalize('NFKC').toLocaleLowerCase('uk-UA').replace(/[^0-9a-zа-яіїєґ]+/gi,' ').replace(/\s+/g,' ').trim()}
+function historySearchText(item){return normalizeHistorySearch([item?.title,item?.year,historyTypeLabel(item),item?.media_type==='tv'?seasonLabel(item?.seasons||[]):'',item?.overview].filter(Boolean).join(' '))}
+function visibleHistoryItems(){const query=normalizeHistorySearch(historySearchQuery);if(!query)return historyItems;const terms=query.split(' ').filter(Boolean);return historyItems.filter(item=>{const text=historySearchText(item);return terms.every(term=>text.includes(term))})}
+function renderHistoryCards(){const cards=$('historyCards'),visible=visibleHistoryItems(),count=$('historyResultCount');if(count)count.textContent=historySearchQuery?`${visible.length} з ${historyItems.length}`:String(historyItems.length);if(!visible.length){cards.innerHTML=`<div class="history-empty"><span class="mdi" style="--icon:url('/static/icons/mdi/magnify.svg')"></span><strong>Нічого не знайдено</strong><span>Змініть запит у полі пошуку.</span></div>`;return}cards.innerHTML=visible.map(item=>{const meta=[historyTypeLabel(item),item.year||'',item.media_type==='tv'?seasonLabel(item.seasons||[]):'',metadataRuntimeLabel(item)].filter(Boolean).join(' · ');const poster=item.poster?`<img src="${esc(item.poster)}" alt="" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false">`:'';const fallback=`<span class="history-card-poster-fallback" ${item.poster?'hidden':''}><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span></span>`;const overview=item.overview?`<p>${esc(item.overview)}</p>`:'';const remove=historyEditMode?`<button class="history-delete-btn" type="button" data-delete-history-id="${esc(item.history_id)}" aria-label="Видалити ${esc(item.title)}"><span aria-hidden="true">×</span></button>`:'';return`<div class="history-card-item${item.history_id===$('history').value?' active':''}"><button class="history-card-open" type="button" data-history-id="${esc(item.history_id)}"><span class="history-card-poster">${poster}${fallback}</span><span class="history-card-copy"><strong>${esc(item.title)}</strong><span>${esc(meta)}</span>${overview}</span></button>${remove}</div>`}).join('')}
+async function openHistorySheet(edit=false){if($('historyPicker').disabled&&!edit)return;historyEditMode=!!edit;await loadHistory();historyEditMode=!!edit;$('historySheetTitle').textContent=historyEditMode?'Редагування історії':'Історія';$('historySearch').value=historySearchQuery;renderHistoryCards();$('historySheet').hidden=false;document.body.classList.add('history-sheet-open')}
+function closeHistorySheet(){$('historySheet').hidden=true;document.body.classList.remove('history-sheet-open');historyEditMode=false}
+async function chooseHistory(historyId){setHistorySelection(historyId);closeHistorySheet();await openHistory(historyId)}
+async function deleteHistory(historyId){const item=historyItems.find(x=>x.history_id===historyId);try{const[r,j]=await jf('/api/video/history/'+encodeURIComponent(historyId),{method:'DELETE'});if(!r.ok)throw new Error(j.error||'Не вдалося видалити');historyItems=historyItems.filter(x=>x.history_id!==historyId);if($('history').value===historyId)setHistorySelection('');await loadHistory();historyEditMode=true;$('historySheetTitle').textContent='Редагування історії';renderHistoryCards();message(`Видалено: ${item?.title||'твір'}`)}catch(e){message(e.message||'Не вдалося видалити',true)}}
+async function loadHistory(){try{const selected=$('history')?.value||'';const[r,j]=await jf('/api/video/history');historyItems=r.ok&&Array.isArray(j.items)?j.items:[];const options=[{value:'',label:historyItems.length?'Оберіть збережений твір':'Історія порожня'},...historyItems.map(item=>({value:item.history_id,label:historyItemLabel(item)}))];fillOptions('history',options,selected);$('history').disabled=!historyItems.length;$('historyPicker').disabled=!historyItems.length;setHistorySelection(historyItems.some(x=>x.history_id===selected)?selected:'');renderHistoryCards()}catch(e){fillOptions('history',[{value:'',label:'Історія недоступна'}],'');$('history').disabled=true;$('historyPicker').disabled=true;$('historyPickerText').textContent='Історія недоступна'}}
+async function openHistory(historyId=$('history').value){if(!historyId)return;setReady(false);message('Відкриваю з історії…');try{const[r,j]=await jf('/api/video/history/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history_id:historyId})});if(!r.ok)throw new Error(j.error||'Не вдалося відкрити історію');currentJobId=j.job_id;setLocked(false);await loadJob(j.preferred||{});message('Завантажено з історії без нового пошуку')}catch(e){message(e.message||'Історія недоступна',true)}}
+async function resolveUrl(){const url=$('url').value.trim();if(!url)return;setResetReady();resetOptions('Шукаю доступні варіанти…');renderCatalog({page_url:url,title:'Пошук відео'},'Шукаю картку й українські джерела…');setReady(false);message('Шукаю відео…');try{const[r,j]=await jf('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});if(!r.ok){message(j.error||'Не вдалося прочитати посилання',true);return}currentJobId=j.job_id;setLocked(false);writeSession();loadJob({})}catch(e){setReady(false);message('Home Edge недоступний',true)}}
+async function applyTrack(kind,value){const[r,j]=await jf('/api/player/track/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:value})});if(!r.ok)throw new Error(j.error||'Не вдалося змінити доріжку');currentPlayer=j.player||currentPlayer}
+async function continueSaved(){if(!currentJobId){message('Оберіть твір',true);return}$('continueButton').disabled=true;message('Відновлюю збережений перегляд…');try{const[r,j]=await jf('/api/video/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:currentJobId})});if(!r.ok)throw new Error(j.error||'Немає збереженого моменту');currentJobId=j.job_id;setLocked(true);await loadJob(j.preferred||{});message('Продовжено зі збереженого місця');setTimeout(()=>shellNavigate('/phone'),120)}catch(e){message(e.message||'Не вдалося продовжити перегляд',true)}finally{$('continueButton').disabled=!currentJobId}}
+async function playSelected(){const s=selectedSource();if(!s){await resolveUrl();return}setReady(false);message('Застосовую вибір…');let applied=false;try{const same=!!(currentPlayer?.running&&currentPlayer.job_id===currentJobId&&currentPlayer.source_id===s.source_id);if(!same){const[r,j]=await jf('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:currentJobId,source_id:s.source_id,season:s.season||$('season').value,episode:s.episode||$('episode').value,voice:s.group||s.translation||$('voice').value,quality:s.quality||$('quality').value,subtitles:'off'})});if(!r.ok)throw new Error(j.error||'Не вдалося запустити відео');const appliedSource={...s,source_id:j.source_id||s.source_id};currentPlayer={...(j.player||{}),...j,job_id:currentJobId,source_id:appliedSource.source_id,running:true};await writeSession(appliedSource);message(j.refreshed?'Потік змінився — джерело оновлено':'Відтворення змінено')}else{if(!$('audioRow').hidden&&String($('audioTrack').value)!==String(currentPlayer.aid??''))await applyTrack('audio',$('audioTrack').value);const sid=currentPlayer.sid===false||currentPlayer.sid==null?'off':String(currentPlayer.sid);if(!$('subtitleRow').hidden&&String($('subtitleTrack').value)!==sid)await applyTrack('subtitle',$('subtitleTrack').value);await writeSession();message('Відтворення змінено')}applied=true;setLocked(true);setTimeout(()=>shellNavigate('/phone'),120)}catch(e){message(e.message||'Не вдалося застосувати вибір',true)}finally{if(!applied)setReady(!!selectedSource())}}
+function resetOptions(text='Шукаю доступні варіанти…'){sources=[];jobData=null;if($('catalogLinks'))$('catalogLinks').hidden=true;currentPlayer=null;updateAutoplayUi();setReady(false);setWorkTitle('');setResetReady();for(const id of['voice','season','episode','quality']){$(id).innerHTML='';$(id).disabled=true}hideTracks();renderCatalog({page_url:$('url').value},text)}
+async function clearUrl(){clearTimeout(pollTimer);await clearSession();currentJobId=null;setLocked(false);$('url').value='';resetOptions('Оберіть твір з історії або надішліть його через «Поділитися».');renderCatalog({},'Оберіть твір з історії або надішліть його через «Поділитися».');setResetReady();message('Очищено')}
+$('videoForm').onsubmit=e=>{e.preventDefault();playSelected()};
+$('autoplayToggle').addEventListener('change',e=>setAutoplay(e.target.checked));$('url').addEventListener('input',setResetReady);$('url').addEventListener('change',async()=>{if(!locked&&jobData&&$('url').value!==jobData.page_url){currentJobId=null;clearSession();resetOptions('Натисніть «Відкрити відео», щоб виконати пошук.')}});
+$('historyPicker').onclick=()=>openHistorySheet(false);$('historySheetClose').onclick=closeHistorySheet;$('historySheetBackdrop').onclick=closeHistorySheet;$('historySearch').addEventListener('input',e=>{historySearchQuery=e.target.value;renderHistoryCards()});$('historyCards').onclick=e=>{const remove=e.target.closest('[data-delete-history-id]');if(remove){e.preventDefault();e.stopPropagation();deleteHistory(remove.dataset.deleteHistoryId);return}const button=e.target.closest('[data-history-id]');if(button)chooseHistory(button.dataset.historyId)};window.openHistoryEditor=()=>openHistorySheet(true);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('historySheet').hidden)closeHistorySheet()});$('season').onchange=()=>{updateEpisode();if(jobData)renderCatalog(jobData);setReady(!!selectedSource())};$('episode').onchange=()=>{updateQuality();setReady(!!selectedSource())};$('quality').onchange=()=>{updateVoice();setReady(!!selectedSource())};$('voice').onchange=()=>{renderTracks();updateSummary();writeSession();setReady(!!selectedSource())};$('audioTrack').onchange=updateSummary;$('subtitleTrack').onchange=updateSummary;
+async function boot(){setReady(false);setResetReady();await loadHistory();await loadAutoplay();const params=new URLSearchParams(location.search);if(params.get('edit')==='history')setTimeout(()=>openHistorySheet(true),0);const sharedJob=params.get('job_id');if(sharedJob){currentJobId=sharedJob;setLocked(false);let preferred={};try{const[r,p]=await jf('/api/player',{cache:'no-store'});if(r.ok&&p.running&&p.job_id===sharedJob){currentPlayer=p;preferred={source_id:p.source_id,season:p.season,episode:p.episode,voice:p.translation}}}catch(e){}await loadJob(preferred);return}const saved=await readSession();if(saved.job_id){currentJobId=saved.job_id;$('url').value=saved.url||'';setLocked(!!saved.locked);await loadJob(saved);return}try{const[r,p]=await jf('/api/player');if(r.ok&&p.running&&p.job_id){currentPlayer=p;currentJobId=p.job_id;setLocked(true);await loadJob({source_id:p.source_id});await writeSession()}}catch(e){}}boot();
+</script>
+</body></html>

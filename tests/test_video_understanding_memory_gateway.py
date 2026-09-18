@@ -7,11 +7,11 @@ import pytest
 
 from core.memory_gateway import MemoryGateway, capability_token
 from core.memory_gateway_storage import PrivateMemoryGatewayStorage
-from core.video_understanding.memory_gateway_adapter import (
+from skeleton_media.video_understanding.memory_gateway_adapter import (
     build_private_mutation,
     canonical_request_fingerprint,
 )
-from core.video_understanding.models import (
+from skeleton_media.video_understanding.models import (
     Domain,
     ProcessingMode,
     ProcessingState,

@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.intake_adapters import DirectMediaAdapter, LocalFileAdapter, YtDlpAdapter
-from core.video_understanding.models import ProcessingMode, VideoUnderstandingError
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
-from core.video_understanding.subprocess_tools import CommandResult
-from core.video_understanding.url_classifier import classify_remote_url
+from skeleton_media.video_understanding.intake_adapters import DirectMediaAdapter, LocalFileAdapter, YtDlpAdapter
+from skeleton_media.video_understanding.models import ProcessingMode, VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.subprocess_tools import CommandResult
+from skeleton_media.video_understanding.url_classifier import classify_remote_url
 
 
 def config(tmp_path: Path) -> VideoRuntimeConfig:

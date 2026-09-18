@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.url_classifier import classify_local_reference, classify_remote_url
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.url_classifier import classify_local_reference, classify_remote_url
 
 
 def test_youtube_variants_normalize_without_network() -> None:

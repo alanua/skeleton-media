@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from core.video_understanding.local_llm import (
+from skeleton_media.video_understanding.local_llm import (
     LocalLlmClient,
     LocalLlmConfig,
     UnderstandingInput,
     local_llm_policy,
 )
-from core.video_understanding.models import ProcessingMode, VideoUnderstandingError
+from skeleton_media.video_understanding.models import ProcessingMode, VideoUnderstandingError
 
 
 SECTIONS = {

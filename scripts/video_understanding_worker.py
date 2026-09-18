@@ -11,15 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.video_understanding.live_runtime import (
+from skeleton_media.video_understanding.live_runtime import (
     build_live_runtime,
     doctor_live_runtime,
     synthetic_memory_roundtrip,
 )
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.pipeline import VideoPipeline
-from core.video_understanding.queue import FileQueue
-from core.video_understanding.worker import VideoWorker
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.pipeline import VideoPipeline
+from skeleton_media.video_understanding.queue import FileQueue
+from skeleton_media.video_understanding.worker import VideoWorker
 
 
 def run_once(

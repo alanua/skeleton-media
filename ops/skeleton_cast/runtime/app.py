@@ -26,7 +26,7 @@ import player
 import site_registry
 from resolver import BrowserChallengeError, OriginProtectedError, resolve_page
 
-HOME = Path('/home/valertos08')
+HOME = Path(os.environ.get('SKELETON_MEDIA_HOME', str(Path.home()))).expanduser()
 BASE = HOME / '.local/lib/skeleton-cast'
 STATE = HOME / '.local/state/skeleton-cast'
 HOME_NATIVE_RELEASE = STATE / 'home-native-release.json'
@@ -34,7 +34,7 @@ JOBS = STATE / 'jobs'
 STATIC = BASE / 'static'
 POSTERS = STATE / 'posters'
 REGISTRY = HOME / '.config/skeleton/device-registry/confirmed.yaml'
-LAN_HOST = '192.0.2.10'
+LAN_HOST = os.environ.get('SKELETON_MEDIA_LAN_HOST', '127.0.0.1')
 PORT = 8100
 VOLUME_POLICY = HOME / '.local/bin/home-edge-volume-policy'
 VOLUME_STATE = HOME / '.local/state/skeleton/volume-policy.json'
@@ -48,7 +48,7 @@ POINTER_INPUT_SOCKET = Path('/run/user/1000/skeleton-pointer.sock')
 TV_MODE = HOME / '.local/bin/tv-mode'
 XDOTOOL = '/usr/bin/xdotool'
 CHROME_MEDIA = HOME / '.local/bin/home-edge-chrome-media'
-ANDROID_SERIAL = '192.0.2.10:5555'
+ANDROID_SERIAL = os.environ.get('SKELETON_MEDIA_ANDROID_SERIAL', '')
 ALLOWED = ('uakino.club', 'uakino.me', 'uakino.best', 'klon.fun', 'ashdi.vip')
 URL_RE = re.compile(r'https?://[^\s<>"\']+', re.I)
 
@@ -95,7 +95,7 @@ def _save(job: dict) -> None:
     _atomic(_job_path(job['job_id']), job)
 
 
-TRUSTED_CLIENT_IDS = ('redmi_12', 's20_liudmyla', 'iphone_son', 'samsung_kiosk')
+TRUSTED_CLIENT_IDS = tuple(item.strip() for item in os.environ.get('SKELETON_MEDIA_TRUSTED_CLIENT_IDS', '').split(',') if item.strip())
 
 
 def _client_identities() -> list[tuple[str, str, str]]:
@@ -1073,7 +1073,7 @@ def hyperion_set() -> Response:
     except Exception as exc:
         detail = str(exc)
         lowered = detail.lower()
-        if '192.0.2.10' in detail or ('curl:' in lowered and ('connect' in lowered or 'timeout' in lowered)):
+        if 'curl:' in lowered and ('connect' in lowered or 'timeout' in lowered):
             return jsonify({
                 'error': 'TV-WLED зараз недоступний. Перевірте живлення контролера підсвітки; Home Edge відновить HyperHDR автоматично після його появи.',
                 'code': 'tv_wled_offline',

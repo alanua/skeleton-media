@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.artifact_store import PrivateArtifactStore
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.artifact_store import PrivateArtifactStore
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
 
 
 def config(tmp_path: Path) -> VideoRuntimeConfig:

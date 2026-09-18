@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from core.video_understanding.domain_router import route_domain
-from core.video_understanding.models import Domain
+from skeleton_media.video_understanding.domain_router import route_domain
+from skeleton_media.video_understanding.models import Domain
 
 
 def test_home_automation_and_skeleton_domains_route() -> None:

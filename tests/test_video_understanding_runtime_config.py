@@ -6,8 +6,8 @@ import tomllib
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig, load_runtime_config
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig, load_runtime_config
 
 
 def make_config(tmp_path: Path, *, transport: str = "private_bridge") -> VideoRuntimeConfig:

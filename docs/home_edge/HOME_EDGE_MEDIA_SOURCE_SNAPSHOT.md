@@ -2,7 +2,7 @@
 
 `home_edge_01_media_source_snapshot_v1` is a fixed-purpose Runner runtime-maintenance operation for one read-only capture:
 
-- repository: `alanua/Skeleton`
+- repository: `alanua/skeleton-media`
 - target: `home-edge-01`
 - public source identity token: `home_edge_01_skeleton_cast_app_py`
 - execution lane: `read_only`

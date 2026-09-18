@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.queue import FileQueue, QueueRecord
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.queue import FileQueue, QueueRecord
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
 
 
 class Clock:

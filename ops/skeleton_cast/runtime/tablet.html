@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0a0d10">
+<title>Samsung Media Tablet</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050608;color:#fff;font-family:Arial,sans-serif}.rot{position:absolute;left:50%;top:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate(90deg);-webkit-transform:translate(-50%,-50%) rotate(90deg);overflow:auto;background:#0a0d10;padding:12px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.title{font-size:20px;font-weight:bold}.status{font-size:12px;color:#9db0bd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:58%}.card{background:#151b20;border:1px solid #2a343c;border-radius:12px;padding:10px;margin-bottom:10px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.btn{border:0;border-radius:10px;background:#26343e;color:white;min-height:54px;font-size:15px;font-weight:bold;padding:8px}.btn:active{background:#476276}.primary{background:#b54225}.good{background:#225f45}.muted{background:#3b4045}.row{display:flex;gap:8px;align-items:center}.grow{flex:1}.small{font-size:12px;color:#aab7c0}.label{font-size:13px;color:#b9c6ce;margin:2px 0 8px}.range{width:100%}.player{width:100%;height:220px;background:black;border-radius:10px}.url{width:100%;height:46px;border-radius:9px;border:1px solid #3b4c57;background:#0b1115;color:#fff;padding:8px;font-size:14px}.badge{display:inline-block;padding:4px 7px;border-radius:999px;background:#22313a;color:#cfe0e8;font-size:11px;margin-right:4px}.footer{padding:4px 0 14px;text-align:center;color:#71828d;font-size:11px}@media(max-height:550px){.player{height:160px}.btn{min-height:46px}.rot{padding:8px}.card{margin-bottom:7px}}
+</style>
+</head>
+<body><div class="rot">
+<div class="top"><div class="title">Samsung · Медіа</div><div id="connection" class="status">Підключення…</div></div>
+<div class="card">
+<div class="label">Головний TV / Home Edge</div>
+<div class="grid">
+<button class="btn" onclick="mode('kiosk')">YouTube</button>
+<button class="btn" onclick="mode('tv')">TV</button>
+<button class="btn" onclick="mode('mpv')">MPV</button>
+<button class="btn" onclick="mode('games')">Ігри</button>
+</div>
+<div style="height:8px"></div>
+<div class="grid">
+<button class="btn" onclick="ctl('rewind')">« 10 с</button>
+<button id="playBtn" class="btn primary" onclick="togglePlay()">Пауза</button>
+<button class="btn" onclick="ctl('fast-forward')">10 с »</button>
+<button class="btn muted" onclick="ctl('stop')">Стоп</button>
+</div>
+<div style="height:8px"></div>
+<div class="row"><span class="small">Гучність</span><input id="volume" class="range grow" type="range" min="20" max="80" step="5" value="40" onchange="setVolume(this.value)"><span id="volumeValue" class="small">40%</span><button class="btn muted" style="min-height:42px" onclick="setVolume(0)">Mute</button></div>
+<div style="height:8px"></div>
+<div class="row"><button id="hyperion" class="btn grow" onclick="toggleHyperion()">Hyperion</button><button class="btn grow" onclick="refreshAll()">Оновити</button></div>
+<div id="now" class="small" style="margin-top:8px">Нічого не відтворюється</div>
+</div>
+
+<div class="card">
+<div class="label">Плеєр планшета</div>
+<video id="localVideo" class="player" controls preload="metadata"></video>
+<div style="height:8px"></div>
+<input id="mediaUrl" class="url" type="url" placeholder="Пряме посилання на MP4 / аудіо у домашній мережі">
+<div style="height:8px"></div>
+<div class="grid3"><button class="btn good" onclick="playUrl()">Відкрити</button><button class="btn" onclick="playTest()">Тест 360p</button><button class="btn muted" onclick="stopLocal()">Закрити</button></div>
+<div style="height:8px"></div><div id="caps" class="small">Перевіряю кодеки…</div>
+</div>
+<div class="card"><div class="label">Skeleton Media Receiver</div><div class="row"><a class="btn good grow" style="text-decoration:none;text-align:center;line-height:38px" href="/download/SkeletonSamsungMedia.apk">Встановити / оновити receiver</a></div></div><div class="footer">Локальний клієнт Skeleton · без хмари</div>
+</div>
+<script>
+(function(){
+'use strict';
+var playerState={},hyperionState=false;
+function xhr(method,url,data,cb){var x=new XMLHttpRequest();x.onreadystatechange=function(){if(x.readyState===4){var j={};try{j=JSON.parse(x.responseText||'{}')}catch(e){}cb&&cb(x.status,j)}};x.open(method,url,true);if(data!==null&&data!==undefined){x.setRequestHeader('Content-Type','application/json');x.send(JSON.stringify(data))}else{x.send()}}
+window.mode=function(m){setConnection('Перемикаю…');xhr('POST','/api/mode/'+m,null,function(s,j){setConnection(s===200?'Готово':'Помилка');refreshAll()})};
+window.ctl=function(a){xhr('POST','/api/control/'+a,null,function(){refreshAll()})};
+window.togglePlay=function(){ctl(playerState.pause?'play':'pause')};
+window.setVolume=function(v){v=parseInt(v,10)||0;xhr('POST','/api/volume',{level:v},function(){refreshVolume()})};
+window.toggleHyperion=function(){xhr('POST','/api/hyperion',{enabled:!hyperionState},function(){refreshHyperion()})};
+window.playUrl=function(){var v=document.getElementById('localVideo'),u=document.getElementById('mediaUrl').value.replace(/^\s+|\s+$/g,'');if(!u)return;v.src=u;v.load();var p=v.play();if(p&&p.catch)p.catch(function(){})};
+window.playTest=function(){var v=document.getElementById('localVideo');v.src='/static/tablet-test.mp4';v.load();var p=v.play();if(p&&p.catch)p.catch(function(){})};
+window.stopLocal=function(){var v=document.getElementById('localVideo');try{v.pause()}catch(e){}v.removeAttribute('src');v.load()};
+function setConnection(t){document.getElementById('connection').innerHTML=t}
+function refreshPlayer(){xhr('GET','/api/player',null,function(s,j){if(s!==200)return;playerState=j||{};var run=!!j.running,title=j['display-title']||j['media-title']||'';document.getElementById('now').innerHTML=run?(title||'Відтворення'):'Нічого не відтворюється';document.getElementById('playBtn').innerHTML=(run&&!j.pause)?'Пауза':'Грати';setConnection('TV: '+(run?'відтворення':'готовий'))})}
+function refreshVolume(){xhr('GET','/api/volume',null,function(s,j){if(s!==200)return;var v=parseInt(j.master,10)||0;var shown=v||parseInt(j.last_nonzero,10)||40;document.getElementById('volume').value=shown;document.getElementById('volumeValue').innerHTML=(v===0?'mute · ':'')+shown+'%'})}
+function refreshHyperion(){xhr('GET','/api/hyperion',null,function(s,j){if(s!==200)return;hyperionState=!!j.enabled;var b=document.getElementById('hyperion');b.innerHTML='Hyperion: '+(hyperionState?'ON':'OFF');b.className='btn grow '+(hyperionState?'good':'muted')})}
+window.refreshAll=function(){refreshPlayer();refreshVolume();refreshHyperion()};
+function codec(v,type){var r='';try{r=v.canPlayType(type)||''}catch(e){}return r}
+function report(){var v=document.createElement('video');var data={user_agent:navigator.userAgent||'',screen:String(screen.width)+'x'+String(screen.height),pixel_ratio:String(window.devicePixelRatio||1),touch_points:String(navigator.maxTouchPoints||0),mp4_h264_aac:codec(v,'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),mp4:codec(v,'video/mp4'),webm_vp8:codec(v,'video/webm; codecs="vp8, vorbis"'),hls:codec(v,'application/vnd.apple.mpegurl'),fullscreen:!!(v.requestFullscreen||v.webkitRequestFullscreen)};xhr('POST','/api/tablet-capabilities',data,function(s,j){var text='MP4/H.264: '+(data.mp4_h264_aac||data.mp4||'ні')+' · WebM: '+(data.webm_vp8||'ні')+' · HLS: '+(data.hls||'ні');document.getElementById('caps').innerHTML=text})}
+refreshAll();report();setInterval(refreshPlayer,2500);setInterval(refreshVolume,5000);setInterval(refreshHyperion,5000);
+})();
+</script></body></html>

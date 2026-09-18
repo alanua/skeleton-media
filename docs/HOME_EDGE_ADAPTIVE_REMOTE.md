@@ -1,6 +1,6 @@
 # Home Edge Adaptive Phone Controls
 
-`core.home_edge.adaptive_remote` is the repository-owned reference contract for
+`skeleton_media.home_edge.adaptive_remote` is the repository-owned reference contract for
 phone controls used by Home Edge. It is offline-only and does not connect to a
 TV, Android runtime, browser, player, game, SSH route, or MCP service.
 

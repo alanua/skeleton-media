@@ -1,0 +1,130 @@
+{
+  "schema": "skeleton.home.native_design_contract.v1",
+  "created_at": "2026-08-13T07:45:25.861424+00:00",
+  "source": "live Web Home v129 visual contract",
+  "source_sha256": {
+    "static/ui.css": "18350186be380ee971e7ee0f0714dcdd9f666088609ccc20d9e7ac703cf7dd44",
+    "phone.html": "c69398c8b96821cf0d0778a84e745d0af9bfcb2bb39a4071d8c067f208cadf32",
+    "video.html": "9a837d957aaaeebc47873f93f651297786f280a54f9edea7f935e3942d40f70c",
+    "app-shell.html": "7fcb9866f53226187e05d0f9472cff4da003e5b6d1123b4e4cde58887e24236d"
+  },
+  "rule": "Native architecture may change implementation only. Visual design must reproduce the web application one-for-one; no independent native redesign.",
+  "palette": {
+    "bg": "#0a0d10",
+    "surface": "#151a1f",
+    "surface2": "#1a2026",
+    "tile": "#12171c",
+    "line": "#232a31",
+    "text": "#f5f6f7",
+    "muted": "#8d969f",
+    "accent": "#ff6a00",
+    "accent_soft": "#2a1c13",
+    "ok": "#58d57b",
+    "danger": "#ff7b7b"
+  },
+  "shell": {
+    "max_width_dp": 500,
+    "header_height_dp": 74,
+    "content_horizontal_dp": 13,
+    "bottom_nav_height_dp": 70,
+    "bottom_nav_horizontal_dp": 10,
+    "bottom_label_dp": 9,
+    "bottom_label_weight": 600,
+    "bottom_active_weight": 700,
+    "bottom_icon_dp": 21,
+    "bottom_gap_dp": 3,
+    "tabs": [
+      "Головна",
+      "Відео",
+      "СК",
+      "Пристрої"
+    ]
+  },
+  "header": {
+    "title_dp": 20,
+    "title_weight": 650,
+    "title_letter_spacing_em": -0.015,
+    "subtitle_dp": 11,
+    "subtitle_weight": 500,
+    "horizontal_dp": 16,
+    "bottom_dp": 8,
+    "title_subtitle_gap_dp": 4
+  },
+  "home": {
+    "mode_row_height_dp": 64,
+    "mode_gap_dp": 6,
+    "mode_icon_dp": 22,
+    "mode_label_dp": 10,
+    "mode_label_weight": 600,
+    "mode_active_weight": 700,
+    "mode_background": "transparent",
+    "player_card_radius_dp": 16,
+    "player_card_padding": [
+      10,
+      12,
+      12,
+      12
+    ],
+    "poster_radius_dp": 14,
+    "poster_default_aspect": "2:3",
+    "youtube_active_poster_aspect": "16:9",
+    "player_title_dp": 14,
+    "series_meta_dp": 11,
+    "series_meta_color": "#ff6a00",
+    "transport_icon_dp": 25,
+    "play_button_dp": 48,
+    "volume_step_dp": 40
+  },
+  "video": {
+    "form_card_radius_dp": 16,
+    "form_card_horizontal_dp": 12,
+    "catalog_radius_dp": 13,
+    "catalog_min_height_dp": 148,
+    "catalog_poster_width_dp": 78,
+    "catalog_poster_aspect": "2:3",
+    "catalog_gap_dp": 13,
+    "catalog_title_dp": 15,
+    "catalog_meta_dp": 10,
+    "catalog_overview_dp": 11,
+    "selector_row_min_height_dp": 56,
+    "selector_icon_col_dp": 28,
+    "selector_icon_dp": 20,
+    "selector_label_dp": 10,
+    "selector_text_dp": 14,
+    "selector_height_dp": 39,
+    "selector_radius_dp": 9,
+    "history_sheet_radius_top_dp": 18,
+    "history_card_poster": [
+      64,
+      96
+    ],
+    "history_title_dp": 15,
+    "history_meta_dp": 10,
+    "history_overview_dp": 11,
+    "actions": {
+      "play": [
+        56,
+        50
+      ],
+      "reset": [
+        56,
+        50
+      ],
+      "radius_dp": 15,
+      "gap_dp": 10
+    },
+    "provider_icons": {
+      "shape": "circle",
+      "position": "immediately above action row",
+      "source": "installed application icon",
+      "no_text_buttons": true
+    }
+  },
+  "nonnegotiable": [
+    "Use the same MDI glyphs as the web UI",
+    "Do not use Unicode substitute icons",
+    "Do not add cards/controls absent from web UI unless required by the canonical Skeleton Dashboard task",
+    "Do not change Gallery under this work",
+    "SK content is governed separately by the canonical Skeleton Dashboard task; only its shared shell styling comes from this design contract"
+  ]
+}

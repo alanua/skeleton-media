@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.runtime_install import install_runtime
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_install import install_runtime
 
 
 def main(argv: list[str] | None = None) -> int:

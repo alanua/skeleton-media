@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<title>Пристрої · Home</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/app-color-180.png">
+<link rel="stylesheet" href="/static/ui.css?v=129">
+</head>
+<body>
+<header class="app-tab-header">
+  <div class="app-tab-copy"><strong>Пристрої</strong><small><span>Home Edge · Підключено</span><span class="online-dot"></span></small></div>
+  <div class="header-actions" data-home-header-actions></div>
+</header>
+<main>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <section class="card" style="padding:18px">
+    <div style="display:flex;align-items:center;gap:13px">
+      <span class="mdi" style="--icon:url('/static/icons/mdi/television.svg');width:34px;height:34px"></span>
+      <div style="flex:1"><strong style="display:block;font-size:17px">Sharp LC-55CFE6352E</strong><small style="color:var(--muted)">Пошук ІЧ-профілю через Redmi</small></div>
+</div>
+  </section>
+</main>
+
+<nav class="bottom-nav" aria-label="Навігація">
+  <a class="nav-item" href="/phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></a>
+  <a class="nav-item" href="/video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></a>
+  <a class="nav-item" href="/sk"><span class="mdi" style="--icon:url('/static/icons/mdi/monitor-dashboard.svg')"></span><span>СК</span></a>
+  <a class="nav-item active" href="/devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></a>
+</nav>
+<script src="/static/home-shell.js?v=129"></script>
+</body>
+</html>

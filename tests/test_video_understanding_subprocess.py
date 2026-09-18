@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
-from core.video_understanding.subprocess_tools import BoundedCommandRunner, CommandRequest
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.subprocess_tools import BoundedCommandRunner, CommandRequest
 
 
 def config(tmp_path: Path) -> VideoRuntimeConfig:

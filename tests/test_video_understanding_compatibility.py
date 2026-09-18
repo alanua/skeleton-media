@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.video_understanding.compatibility import map_dios_operation
-from core.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.compatibility import map_dios_operation
+from skeleton_media.video_understanding.models import VideoUnderstandingError
 
 
 def test_existing_dios_operations_map_to_universal_profile() -> None:

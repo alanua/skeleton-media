@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Home">
+<title>Home</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/app-color-180.png">
+<link rel="stylesheet" href="/static/ui.css?v=133">
+</head>
+<body class="home-page">
+<div id="mediaAmbientBg" class="media-ambient-bg empty" aria-hidden="true"></div>
+<header class="app-tab-header">
+  <div class="app-tab-copy"><strong>Головна</strong><small><span>Home Edge · Підключено</span><span class="online-dot"></span></small></div>
+  <div class="header-actions" data-home-header-actions></div>
+</header>
+<main>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+  <section class="tv-modes-card" aria-label="Режими">
+    <div id="modeGrid" class="mode-grid mode-carousel">
+      <button class="mode-btn" id="modeYoutube" type="button" data-mode-target="kiosk"><span class="mdi" style="--icon:url('/static/icons/mdi/youtube.svg')"></span><span>YouTube</span></button>
+      <button class="mode-btn" id="modeMpv" type="button" data-mode-target="mpv"><span class="mdi" style="--icon:url('/static/icons/mdi/cast-connected.svg')"></span><span>Cast</span></button>
+      <button class="mode-btn" id="modeTv" type="button" data-mode-target="tv"><span class="mdi" style="--icon:url('/static/icons/mdi/television.svg')"></span><span>TV</span></button>
+      <button class="mode-btn" id="modeGames" type="button" data-mode-target="games"><span class="mdi" style="--icon:url('/static/icons/mdi/gamepad-variant.svg')"></span><span>Games</span></button>
+    </div>
+  </section>
+
+  <section class="card player-card">
+    <div class="poster-stage">
+      <img id="playerPoster" alt="Афіша відео" hidden>
+      <div id="posterFallback" class="poster-fallback"><span class="mdi" style="--icon:url('/static/icons/mdi/television-play.svg')"></span></div>
+      <div id="tvChannelPanel" class="tv-channel-panel" hidden><div id="tvChannelList" class="tv-channel-list"></div></div>
+    </div>
+    <button id="episodePrev" class="episode-frame-step prev" type="button" aria-label="Попередня серія" hidden>‹</button>
+    <button id="episodeNext" class="episode-frame-step next" type="button" aria-label="Наступна серія" hidden>›</button>
+    <div class="player-copy">
+      <div id="playerTitleViewport" class="player-title-viewport">
+        <div id="playerTitleTrack" class="player-title-track">
+          <strong id="playerTitle">Нічого не відтворюється</strong>
+          <strong id="playerTitleClone" aria-hidden="true"></strong>
+        </div>
+      </div>
+      <span id="playerState">Оберіть відео</span>
+    </div>
+    <div id="youtubeNavPanel" class="youtube-nav-panel" hidden aria-label="Навігація YouTube">
+      <div class="youtube-side-stack youtube-side-left">
+        <button id="youtubeLike" class="youtube-back-key youtube-extra-key" type="button" data-youtube-nav="like" aria-label="Поставити вподобайку" title="Like" disabled><span class="youtube-like-glyph" aria-hidden="true">👍</span></button>
+        <button class="youtube-back-key" type="button" data-youtube-nav="back" aria-label="Назад у YouTube" title="Назад"><span class="mdi" style="--icon:url('/static/icons/mdi/keyboard-return.svg')"></span></button>
+      </div>
+      <div class="youtube-dpad" role="group" aria-label="Джойстик YouTube">
+        <button class="youtube-nav-key up" type="button" data-youtube-nav="up" aria-label="Вгору"><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-up.svg')"></span></button>
+        <button class="youtube-nav-key left" type="button" data-youtube-nav="left" aria-label="Ліворуч"><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-left.svg')"></span></button>
+        <button id="youtubeCenter" class="youtube-nav-key ok" type="button" data-youtube-nav="ok" aria-label="OK"><span id="youtubeOkText">OK</span><span id="youtubeOkIcon" class="mdi" style="--icon:url('/static/icons/mdi/play.svg')" hidden></span></button>
+        <button class="youtube-nav-key right" type="button" data-youtube-nav="right" aria-label="Праворуч"><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-right.svg')"></span></button>
+        <button class="youtube-nav-key down" type="button" data-youtube-nav="down" aria-label="Вниз"><span class="mdi" style="--icon:url('/static/icons/mdi/chevron-down.svg')"></span></button>
+      </div>
+      <div class="youtube-side-stack youtube-side-right">
+        <button id="youtubeSubtitles" class="youtube-back-key youtube-extra-key" type="button" data-youtube-nav="subtitles" aria-label="Увімкнути субтитри" title="Субтитри" disabled><span class="mdi" style="--icon:url('/static/icons/mdi/closed-caption-outline.svg')"></span></button>
+        <button id="youtubeMute" class="youtube-back-key youtube-mute-key" type="button" onclick="toggleMute()" aria-label="Вимкнути звук" title="Вимкнути звук"><span id="youtubeMuteIcon" class="mdi" style="--icon:url('/static/icons/mdi/volume-off.svg')"></span></button>
+      </div>
+    </div>
+    <div class="player-controls-dock">
+      <div id="playerTimeRow" class="player-time-row"><span id="positionText">0:00</span><span id="durationText">0:00</span></div>
+      <input id="seek" class="player-seek" type="range" min="0" max="1" step="1" value="0" disabled aria-label="Позиція відтворення">
+      <div class="transport">
+        <button id="seekBack" class="transport-btn" type="button" onclick="ctl('back')" aria-label="Назад 15 секунд"><span class="mdi" style="--icon:url('/static/icons/mdi/rewind-15.svg')"></span></button>
+        <button id="playToggle" class="transport-btn primary" type="button" onclick="ctl('toggle')" aria-label="Відтворення або пауза"><span id="toggleIcon" class="mdi" style="--icon:url('/static/icons/mdi/play.svg')"></span></button>
+        <button id="seekForward" class="transport-btn" type="button" onclick="ctl('forward')" aria-label="Вперед 15 секунд"><span class="mdi" style="--icon:url('/static/icons/mdi/fast-forward-15.svg')"></span></button>
+        <button id="mute" class="transport-btn transport-mute" type="button" onclick="toggleMute()" aria-label="Вимкнути звук" title="Вимкнути звук"><span id="muteIcon" class="mdi" style="--icon:url('/static/icons/mdi/volume-off.svg')"></span></button>
+      </div>
+      <div class="player-volume">
+        <button class="volume-step volume-step-down" type="button" onclick="stepVolume(-5)" aria-label="Зменшити гучність на 5%"><span class="mdi" style="--icon:url('/static/icons/mdi/volume-high.svg')"></span></button>
+        <div id="volumeShell" class="volume-slider-shell" style="--volume-position:25%">
+          <span id="volumeValue" class="volume-value">25%</span>
+          <input id="volume" type="range" min="0" max="100" step="5" value="25" aria-label="Гучність">
+        </div>
+        <button class="volume-step volume-step-up" type="button" onclick="stepVolume(5)" aria-label="Збільшити гучність на 5%"><span class="mdi" style="--icon:url('/static/icons/mdi/volume-high.svg')"></span></button>
+      </div>
+    </div>
+  </section>
+
+</main>
+<nav class="bottom-nav" aria-label="Навігація">
+  <a class="nav-item active" href="/phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></a>
+  <a class="nav-item" href="/video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></a>
+  <a class="nav-item" href="/sk"><span class="mdi" style="--icon:url('/static/icons/mdi/monitor-dashboard.svg')"></span><span>СК</span></a>
+  <a class="nav-item" href="/devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></a>
+</nav>
+<script src="/static/home-shell.js?v=129"></script>
+<script>
+const $=id=>document.getElementById(id);
+let dragging=false,volumeDragging=false,hyperionBusy=false,currentVolume=25,lastNonzero=25,noticeTimer,volumeTimer,volumeSeq=0,currentMode='unknown',lastPlayerState={},currentPosterKey='',posterRetryTimer=null,posterRetryAttempt=0,posterLastAttemptAt=0,posterLoadSeq=0,currentBackend='',currentTitleKey='',youtubeNavPending=null,youtubeNavSending=false,lastYoutubeContext={},lastYoutubeContextAt=0,youtubeContextBusy=false,tvChannels=[],tvChannelsAt=0,tvActiveChannel='',tvScrollHoldUntil=0,tvScrollTimer=null,modePollTimer=null,modePollBusy=false,modePollSeq=0,volumePollTimer=null,volumePollBusy=false,volumePollSeq=0,lastVolumeRendered=null;
+const modes=[['modeYoutube','kiosk'],['modeMpv','mpv'],['modeTv','tv'],['modeGames','games']];
+const modeNames={chrome:'Chrome',kiosk:'YouTube',mpv:'Cast',tv:'TV',games:'Games',unknown:'Home Edge'};
+const icon=n=>`url('/static/icons/mdi/${n}.svg')`;
+const setIcon=(id,n)=>$(id).style.setProperty('--icon',icon(n));
+const fmt=t=>{t=Math.max(0,Math.floor(Number(t)||0));const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`};
+function fillRange(el,value,min,max){const pct=Math.max(0,Math.min(100,(value-min)*100/(max-min||1)));el.style.setProperty('--fill',`${pct}%`)}
+function isLivePlayer(p){return !!(currentMode==='tv'||p?.live||p?.backend==='iptv'||p?.channel_id||p?.channel_number!=null)}
+function message(text,error=false){clearTimeout(noticeTimer);$('notice').textContent=text;$('notice').className='notice show'+(error?' error':'');noticeTimer=setTimeout(()=>$('notice').className='notice',error?4200:1700)}
+function clearMessage(){clearTimeout(noticeTimer);$('notice').textContent='';$('notice').className='notice'}
+async function jf(url,opt){const r=await fetch(url,opt),j=await r.json();return[r,j]}
+function renderControlPreset(mode){const tv=mode==='tv',youtube=mode==='kiosk',transport=document.querySelector('.transport');for(const id of ['seekBack','playToggle','seekForward'])$(id).classList.toggle('control-hidden',tv||youtube);transport?.classList.toggle('tv-transport-active',tv);transport?.classList.toggle('control-hidden',youtube);$('playerTimeRow').classList.toggle('control-hidden',tv);$('seek').classList.toggle('control-hidden',tv)}
+function renderMode(m){const mode=m?.mode||'unknown',was=currentMode,changed=mode!==was;currentMode=mode;document.body.classList.toggle('tv-active',mode==='tv');document.body.classList.toggle('youtube-mode',mode==='kiosk');$('tvChannelPanel').hidden=mode!=='tv';if(changed)renderControlPreset(mode);let active=null;for(const[id,v]of modes){$(id).classList.toggle('active',mode===v);if(!modeSwitchBusy)$(id).disabled=false;if(mode===v)active=$(id)}if(changed&&active)active.scrollIntoView({block:'nearest',inline:'nearest'});if(mode==='tv')loadTvChannels(false,changed);if(mode!=='kiosk'){youtubeNavPending=null;lastYoutubeContext={};lastYoutubeContextAt=0}else if(changed)setTimeout(()=>refreshYoutubeContext(true),0);if(changed&&Object.keys(lastPlayerState).length)renderPlayer(lastPlayerState)}
+function scheduleModePoll(delay=5000){clearTimeout(modePollTimer);modePollTimer=setTimeout(pollMode,delay)}
+let mediaEventSource=null,lastMediaEventAt=0;
+function mediaPushHealthy(){return !!mediaEventSource&&(Date.now()-lastMediaEventAt)<20000}
+function connectMediaEvents(){
+  if(mediaEventSource||document.hidden)return;
+  try{const es=new EventSource('/api/media/events');mediaEventSource=es;es.addEventListener('media',ev=>{lastMediaEventAt=Date.now();try{const st=JSON.parse(ev.data||'{}');if(st.mode)renderMode(st.mode);if(st.player)renderPlayer(st.player);if(st.volume)renderVolume(st.volume)}catch(_){}});es.onerror=()=>{try{es.close()}catch(_){}mediaEventSource=null;setTimeout(connectMediaEvents,5000)}}catch(_){mediaEventSource=null}
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){try{mediaEventSource?.close()}catch(_){}mediaEventSource=null}else connectMediaEvents()});
+connectMediaEvents();
+async function pollMode(){if(document.hidden||!window.skeletonTabActive?.()){scheduleModePoll(30000);return}if(mediaPushHealthy()){scheduleModePoll(30000);return}if(modePollBusy){scheduleModePoll(5000);return}modePollBusy=true;const seq=++modePollSeq;try{const[r,j]=await jf('/api/mode',{cache:'no-store'});if(r.ok&&seq===modePollSeq)renderMode(j)}catch(e){}finally{modePollBusy=false;scheduleModePoll(5000)}}
+let modeSwitchBusy=false,modePointerStamp=0;
+async function setMode(mode,button=null){
+  if(modeSwitchBusy)return;
+  modeSwitchBusy=true;
+  for(const[id]of modes){$(id).disabled=true;$(id).classList.toggle('switching',$(id)===button)}
+  message('Перемикаю…');
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
+  try{
+    const[r,j]=await jf('/api/mode/'+mode,{method:'POST',signal:controller.signal,cache:'no-store'});
+    if(!r.ok)throw new Error(j.error||'Режим не перемкнувся');
+    renderMode(j);
+    if(mode==='games'){setTimeout(()=>shellNavigate('/remote'),120);return}
+    const label=mode==='kiosk'?'YouTube':mode==='mpv'?'Cast':mode==='tv'?'TV':'Games';
+    message(mode==='mpv'&&j.restored?`Cast відновлено`:`${label} увімкнено`);
+  }catch(e){
+    message(e?.name==='AbortError'?'Перемикання перевищило 30 с':(e.message||'Home Edge недоступний'),true);
+    try{const[r,j]=await jf('/api/mode',{cache:'no-store'});if(r.ok)renderMode(j)}catch(_){ }
+  }finally{
+    clearTimeout(timer);modeSwitchBusy=false;
+    for(const[id]of modes){$(id).disabled=false;$(id).classList.remove('switching')}
+  }
+}
+function requestModeFromButton(button,event){
+  event?.preventDefault();event?.stopPropagation();
+  const now=performance.now();if(now-modePointerStamp<350)return;modePointerStamp=now;
+  setMode(button.dataset.modeTarget,button);
+}
+document.querySelectorAll('[data-mode-target]').forEach(button=>{
+  button.addEventListener('pointerup',event=>requestModeFromButton(button,event),{passive:false});
+  button.addEventListener('click',event=>{if(event.detail===0)requestModeFromButton(button,event)},{passive:false});
+});
+async function loadTvChannels(force=false,center=false){if(!force&&tvChannels.length&&Date.now()-tvChannelsAt<30000){renderTvChannels(center);return}try{const[r,j]=await jf('/api/tv/channels');if(r.ok){tvChannels=j.channels||[];tvChannelsAt=Date.now();renderTvChannels(center)}}catch(e){}}
+function escHtml(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
+function cleanTvChannelName(value){let text=String(value||'Канал').replace(/\s+/g,' ').trim(),previous='';while(previous!==text){previous=text;text=text.replace(/\s*\((?:\d{3,4}[pi]|hd|sd|uhd|4k)\)\s*$/i,'').replace(/\s*\[(?:geo-blocked|not 24\/7|offline|online only)[^\]]*\]\s*$/i,'').trim()}return text||'Канал'}
+function activateTvProgrammeMarquees(){
+  for(const viewport of document.querySelectorAll('.tv-programme-viewport')){
+    const track=viewport.querySelector('.tv-programme-track'),text=viewport.querySelector('.tv-programme-text'),clone=viewport.querySelector('.tv-programme-clone');
+    if(!track||!text||!clone)continue;
+    track.classList.remove('marquee');track.style.removeProperty('--tv-marquee-distance');track.style.removeProperty('--tv-marquee-duration');clone.hidden=true;clone.textContent='';
+    if(text.scrollWidth<=viewport.clientWidth+2)continue;
+    const gap=32,distance=text.scrollWidth+gap,duration=Math.max(11,distance/27);
+    clone.textContent=text.textContent;clone.hidden=false;
+    track.style.setProperty('--tv-marquee-distance',`${distance}px`);track.style.setProperty('--tv-marquee-duration',`${duration}s`);track.classList.add('marquee');
+  }
+}
+function renderTvChannels(center=false){
+  const list=$('tvChannelList'),previousScroll=list.scrollTop;
+  list.innerHTML=tvChannels.map(c=>{
+    const active=String(c.channel_id)===String(tvActiveChannel),name=escHtml(c.display_name||cleanTvChannelName(c.name)),programme=escHtml(c.programme_title||'');
+    const fallback='<span class="tv-channel-picon-fallback mdi" style="--icon:url(\'/static/icons/mdi/television.svg\')"></span>';
+    const picon=c.picon?`<img src="${escHtml(c.picon)}" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="tv-channel-picon-fallback mdi" hidden style="--icon:url('/static/icons/mdi/television.svg')"></span>`:fallback;
+    const programmeLine=programme?`<span class="tv-programme-viewport"><span class="tv-programme-track"><span class="tv-programme-text">${programme}</span><span class="tv-programme-clone" aria-hidden="true" hidden></span></span></span>`:'';
+    return `<button class="tv-channel-row${active?' active':''}${programme?' has-programme':' no-programme'}" type="button" onclick="playTv('${c.channel_id}')" aria-label="${programme?name+': '+programme:name}"><span class="tv-channel-picon-box">${picon}</span><span class="tv-channel-copy"><span class="tv-channel-name">${name}</span>${programmeLine}</span></button>`;
+  }).join('');
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const rows=[...list.querySelectorAll('.tv-channel-row')],rowHeight=list.clientHeight/7;
+    list.style.setProperty('--tv-row-height',`${rowHeight}px`);
+    if(center&&Date.now()>=tvScrollHoldUntil){
+      const activeIndex=Math.max(0,rows.findIndex(row=>row.classList.contains('active')));
+      const start=Math.max(0,Math.min(Math.max(0,rows.length-7),activeIndex-3));
+      list.scrollTop=start*rowHeight;
+    }else list.scrollTop=previousScroll;
+    activateTvProgrammeMarquees();
+  }));
+}
+function holdTvScroll(){tvScrollHoldUntil=Date.now()+12000;clearTimeout(tvScrollTimer);tvScrollTimer=setTimeout(()=>{if(currentMode==='tv')renderTvChannels(true)},12100)}
+async function playTv(channelId){for(const b of $('tvChannelList').querySelectorAll('button'))b.disabled=true;try{const[r,j]=await jf('/api/tv/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_id:channelId})});if(!r.ok)throw new Error(j.error||'Канал недоступний');tvActiveChannel=channelId;tvScrollHoldUntil=0;if(j.player)renderPlayer(j.player);renderTvChannels(true);message('Канал увімкнено')}catch(e){message(e.message||'Помилка каналу',true)}finally{for(const b of $('tvChannelList').querySelectorAll('button'))b.disabled=false}}
+function cleanPhoneMediaTitle(value){
+  const original=String(value||'').replace(/\s+/g,' ').trim();
+  let title=original.replace(/^(Серіал|Сериал|Фільм|Фильм|Мультфільм|Мультфильм|Аніме)\s+/i,'');
+  title=title.replace(/\s+\d+\s+сезон.*$/i,'');
+  const tails=[' дивитися ',' дивитись ',' смотреть ',' онлайн ',' українською ',' російською ',' безкоштовно ',' в hd якості'];
+  const lower=title.toLowerCase();let cut=title.length;
+  for(const tail of tails){const i=lower.indexOf(tail);if(i>0&&i<cut)cut=i}
+  return title.slice(0,cut).trim()||original;
+}
+function updateTitleMarquee(){
+  const viewport=$('playerTitleViewport'),track=$('playerTitleTrack'),title=$('playerTitle'),clone=$('playerTitleClone');
+  track.classList.remove('marquee');viewport.classList.remove('marquee-active');track.style.removeProperty('--marquee-distance');track.style.removeProperty('--marquee-duration');
+  clone.hidden=true;
+  const eligible=(currentBackend==='youtube-web'||currentMode==='mpv')&&title.textContent.trim();
+  if(!eligible)return;
+  requestAnimationFrame(()=>{
+    const overflow=title.scrollWidth>viewport.clientWidth+2;
+    if(!overflow)return;
+    clone.textContent=title.textContent;clone.hidden=false;
+    const gap=42,distance=title.scrollWidth+gap,duration=Math.max(12,distance/26);
+    track.style.setProperty('--marquee-distance',`${distance}px`);
+    track.style.setProperty('--marquee-duration',`${duration}s`);
+    viewport.classList.add('marquee-active');track.classList.add('marquee');
+  });
+}
+function renderPlayerTitle(text,eligible){
+  const value=String(text||''),key=`${eligible?'1':'0'}|${value}`;
+  if(key===currentTitleKey)return;
+  currentTitleKey=key;$('playerTitle').textContent=value;$('playerTitleClone').textContent='';
+  updateTitleMarquee();
+}
+function setAmbientPoster(url){const bg=$('mediaAmbientBg');if(!bg)return;const value=String(url||'').trim();bg.classList.toggle('empty',!value);bg.style.backgroundImage=value?'url("'+value.replace(/["\\]/g,'')+'")':''}
+function renderPoster(p,youtube=false){
+  const key=p?String((youtube&&p.poster_landscape)||p.poster||''):'';
+  const img=$('playerPoster'),fallback=$('posterFallback');setAmbientPoster(key);
+  if(!key){
+    clearTimeout(posterRetryTimer);posterRetryTimer=null;posterRetryAttempt=0;posterLastAttemptAt=0;posterLoadSeq+=1;currentPosterKey='';
+    img.onload=img.onerror=null;img.hidden=true;img.removeAttribute('src');fallback.hidden=false;return;
+  }
+  if(key===currentPosterKey&&!img.hidden&&img.complete&&img.naturalWidth>0)return;
+  if(key!==currentPosterKey){clearTimeout(posterRetryTimer);posterRetryTimer=null;posterRetryAttempt=0;posterLastAttemptAt=0;posterLoadSeq+=1;currentPosterKey=key;}
+  const now=Date.now();
+  if(posterRetryTimer&&now-posterLastAttemptAt<6000)return;
+  if(posterRetryTimer){clearTimeout(posterRetryTimer);posterRetryTimer=null;}
+  const attempt=posterRetryAttempt;
+  const request=attempt===0?key:`${key}${key.includes('?')?'&':'?'}poster_retry=${now}`;
+  const seq=++posterLoadSeq;posterLastAttemptAt=now;
+  img.hidden=true;fallback.hidden=false;
+  img.onload=()=>{if(seq===posterLoadSeq&&currentPosterKey===key){clearTimeout(posterRetryTimer);posterRetryTimer=null;posterRetryAttempt=0;posterLastAttemptAt=0;img.hidden=false;fallback.hidden=true}};
+  img.onerror=()=>{if(seq!==posterLoadSeq||currentPosterKey!==key)return;img.hidden=true;fallback.hidden=false;posterRetryAttempt+=1;const delay=Math.min(5000,500*(2**Math.min(posterRetryAttempt-1,3)));posterRetryTimer=setTimeout(()=>{posterRetryTimer=null;if(currentPosterKey===key)renderPoster(lastPlayerState,currentMode==='kiosk'&&currentBackend==='youtube-web')},delay)};
+  img.src=request;
+}
+
+function shortSeriesMeta(p){const sm=String(p?.season||'').match(/\d+/),em=String(p?.episode||'').match(/\d+/);return sm&&em?`S${sm[0]} · E${em[0]}`:''}
+function positionEpisodeFrameSteps(){
+  const card=document.querySelector('.player-card'),poster=document.querySelector('.poster-stage'),prev=$('episodePrev'),next=$('episodeNext');
+  if(!card||!poster||!prev||!next)return;
+  const c=card.getBoundingClientRect(),p=poster.getBoundingClientRect(),mid=(p.top-c.top)+p.height/2,leftGap=p.left-c.left,rightGap=c.right-p.right;
+  prev.style.top=`${mid}px`;next.style.top=`${mid}px`;
+  prev.style.left=`${Math.max(9,leftGap/2)}px`;next.style.right=`${Math.max(9,rightGap/2)}px`;
+}
+function renderEpisodeFrameSteps(p,seriesMeta,live,youtube){
+  const show=!!(p?.running&&seriesMeta&&!live&&!youtube),prev=$('episodePrev'),next=$('episodeNext');
+  prev.hidden=!show;next.hidden=!show;if(show)requestAnimationFrame(positionEpisodeFrameSteps);
+}
+async function stepEpisode(direction){
+  const prev=$('episodePrev'),next=$('episodeNext');prev.disabled=true;next.disabled=true;
+  try{const[r,j]=await jf('/api/video/episode/step',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({direction})});if(!r.ok)throw new Error(j.error||'Серію не знайдено');message(direction>0?'Наступна серія':'Попередня серія');setTimeout(()=>pollPlayer(),250)}catch(e){message(e.message||'Не вдалося перейти до серії',true)}finally{prev.disabled=false;next.disabled=false}
+}
+window.addEventListener('resize',()=>requestAnimationFrame(positionEpisodeFrameSteps));
+
+function renderPlayer(p){lastPlayerState=p||{};const run=!!p.running,d=Number(p.duration)||0,t=Number(p['time-pos'])||0,live=isLivePlayer(p),rawTitle=String(p['display-title']||p['media-title']||''),title=p.backend==='youtube-web'?rawTitle:cleanPhoneMediaTitle(rawTitle),youtube=currentMode==='kiosk'&&p.backend==='youtube-web';currentBackend=String(p.backend||'');renderControlPreset(currentMode);document.body.classList.toggle('youtube-player-active',youtube);$('youtubeNavPanel').hidden=!youtube;if(p.channel_id){const next=String(p.channel_id),changed=next!==tvActiveChannel;tvActiveChannel=next;if(changed&&currentMode==='tv'&&tvChannels.length)renderTvChannels(Date.now()>=tvScrollHoldUntil)}renderPlayerTitle(run?(title||'Відео без назви'):'Нічого не відтворюється',run&&(p.backend==='youtube-web'||currentMode==='mpv'));const details=[live?'Ефір':(p.buffering?'Буферизація':(p.pause?'Пауза':(run?'Відтворення':''))),p.quality,p.translation,p.channel].filter(Boolean),seriesMeta=run&&!live?shortSeriesMeta(p):'',stateEl=$('playerState');stateEl.textContent=run?(seriesMeta?seriesMeta:(details.join(' · ')||'Відтворення')):'Оберіть відео';stateEl.classList.toggle('series-short',!!seriesMeta);renderEpisodeFrameSteps(p,seriesMeta,live,youtube);$('playerTimeRow').classList.toggle('control-hidden',live);$('seek').classList.toggle('control-hidden',live);$('seek').disabled=live||!(run&&d>0);$('seekBack').disabled=live||!run;$('seekForward').disabled=live||!run;$('playToggle').disabled=live||!run;$('seek').max=Math.max(1,Math.floor(d));if(!dragging)$('seek').value=Math.min(t,d||t);fillRange($('seek'),t,0,d||1);$('positionText').textContent=fmt(dragging?$('seek').value:t);$('durationText').textContent=fmt(d);setIcon('toggleIcon',run&&!p.pause?'pause':'play');renderYoutubeCenter(lastYoutubeContext,p);if(youtube&&Date.now()-lastYoutubeContextAt>3500)refreshYoutubeContext();renderPoster(run?p:null,youtube)}
+$('episodePrev').addEventListener('click',()=>stepEpisode(-1));$('episodeNext').addEventListener('click',()=>stepEpisode(1));
+let playerPollTimer=null,playerPollBusy=false;
+function schedulePlayerPoll(delay=2000){clearTimeout(playerPollTimer);playerPollTimer=setTimeout(pollPlayer,delay)}
+async function pollPlayer(){
+  if(document.hidden||!window.skeletonTabActive?.()){schedulePlayerPoll(30000);return}
+  if(mediaPushHealthy()){schedulePlayerPoll(30000);return}
+  if(playerPollBusy){schedulePlayerPoll(2000);return}
+  playerPollBusy=true;
+  try{const[r,j]=await jf('/api/player?_='+Date.now(),{cache:'no-store'});if(r.ok)renderPlayer(j)}catch(e){}
+  finally{playerPollBusy=false;schedulePlayerPoll((document.hidden||!window.skeletonTabActive?.())?30000:2000)}
+}
+async function ctl(a){try{const[r,j]=await jf('/api/control/'+a,{method:'POST'});if(j.player)renderPlayer(j.player);message(r.ok?'Готово':j.error||'Плеєр не запущений',!r.ok)}catch(e){message('Home Edge недоступний',true)}}
+async function tvChannelStep(action){if(currentMode!=='tv')return;try{const[r,j]=await jf('/api/remote/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,phase:'tap'})});if(!r.ok)throw new Error(j.error||'Канал не перемкнено');const[pR,p]=await jf('/api/player',{cache:'no-store'});if(pR.ok)renderPlayer(p);tvChannelsAt=0;loadTvChannels(true,true);message('Канал перемкнено')}catch(e){message(e.message||'Home Edge недоступний',true)}}
+function youtubeCenterIsMedia(context){
+  const ctx=String(context?.context||''),active=context?.active||{},tag=String(active.tag||'').toUpperCase(),label=[active.aria,active.text].filter(Boolean).join(' ').toLowerCase();
+  if(ctx==='WATCH_CLEAN'||ctx==='WATCH_PROGRESS'||tag.includes('PROGRESS'))return true;
+  return ctx==='WATCH_CONTROLS'&&/(play|pause|wiedergeben|pausieren|відтвор|пауза|воспроиз|приостанов)/i.test(label);
+}
+function renderYoutubeCenter(context=lastYoutubeContext,player=lastPlayerState){
+  if(context&&Object.keys(context).length){lastYoutubeContext=context;lastYoutubeContextAt=Date.now()}
+  const button=$('youtubeCenter'),text=$('youtubeOkText'),iconEl=$('youtubeOkIcon');if(!button||!text||!iconEl)return;
+  const media=youtubeCenterIsMedia(lastYoutubeContext),contextPaused=lastYoutubeContext?.player?.paused,paused=contextPaused==null?!!player?.pause:!!contextPaused;
+  button.dataset.youtubeNav='ok';text.hidden=media;iconEl.hidden=!media;
+  if(media)setIcon('youtubeOkIcon',paused?'play':'pause');
+  button.ariaLabel=button.title=media?(paused?'Відтворити':'Пауза'):'OK';
+  const controls=lastYoutubeContext?.controls||{},like=$('youtubeLike'),cc=$('youtubeSubtitles');
+  if(like){like.disabled=!media||!controls.like_available;like.classList.toggle('active',!!controls.liked);like.ariaLabel=like.title=controls.liked?'Прибрати вподобайку':'Поставити вподобайку'}
+  if(cc){cc.disabled=!media||!controls.subtitles_available;cc.classList.toggle('active',!!controls.subtitles_enabled);cc.ariaLabel=cc.title=controls.subtitles_enabled?'Вимкнути субтитри':'Увімкнути субтитри'}
+}
+function applyYoutubeControlResult(j){
+  const after=j?.youtube?.after;if(after)renderYoutubeCenter(after,lastPlayerState);
+  const player=after?.player;if(player&&typeof player.paused==='boolean')lastPlayerState={...lastPlayerState,pause:player.paused};
+}
+async function sendYoutubeNav(item){
+  if(youtubeNavSending){youtubeNavPending=item;return}
+  youtubeNavSending=true;
+  let current=item;
+  while(current){
+    if(performance.now()-current.at<=280){
+      try{
+        const[r,j]=await jf('/api/remote/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:current.action,phase:'tap'})});
+        if(!r.ok)throw new Error(j.error||'Команду YouTube не застосовано');
+        applyYoutubeControlResult(j);clearMessage();
+      }catch(e){youtubeNavPending=null;message(e.message||'Home Edge недоступний',true)}
+    }
+    current=youtubeNavPending;youtubeNavPending=null;
+  }
+  youtubeNavSending=false;
+}
+function youtubeNav(action,button){
+  if(currentMode!=='kiosk'||currentBackend!=='youtube-web')return;
+  button?.classList.add('pressed');setTimeout(()=>button?.classList.remove('pressed'),65);
+  const item={action:String(action||''),at:performance.now()};
+  if(youtubeNavSending)youtubeNavPending=item;else sendYoutubeNav(item);
+}
+async function refreshYoutubeContext(force=false){
+  if(youtubeContextBusy||document.hidden||!window.skeletonTabActive?.()||currentMode!=='kiosk'||currentBackend!=='youtube-web')return;
+  if(!force&&Date.now()-lastYoutubeContextAt<3500)return;
+  youtubeContextBusy=true;
+  try{const[r,j]=await jf('/api/remote/status',{cache:'no-store'});if(r.ok)renderYoutubeCenter(j.youtube_context||{},j.player||lastPlayerState)}catch(e){}finally{youtubeContextBusy=false}
+}
+async function pollYoutubeContext(){await refreshYoutubeContext();setTimeout(pollYoutubeContext,8000)}
+function positionVolumeLabel(level){const shown=Math.max(0,Math.min(100,Number(level)||0)),input=$('volume'),shell=$('volumeShell'),label=$('volumeValue'),thumb=15,width=input.clientWidth||0;const x=input.offsetLeft+thumb/2+Math.max(0,width-thumb)*shown/100;label.style.left=`${x}px`;shell.style.setProperty('--volume-position',`${shown}%`)}
+function paintVolume(level){const shown=Math.max(0,Math.min(100,Number(level)||0));if(!volumeDragging)$('volume').value=shown;$('volumeValue').textContent=`${shown}%`;positionVolumeLabel(shown);fillRange($('volume'),shown,0,100)}
+function renderVolume(v){if(!v||v.error)return;const next=Number(v.master)||0;lastNonzero=Number(v.last_nonzero)||lastNonzero;if(next>0)lastNonzero=next;currentVolume=next;if(lastVolumeRendered===next&&!volumeDragging)return;lastVolumeRendered=next;paintVolume(next);const muted=next===0,label=muted?'Увімкнути звук':'Вимкнути звук';for(const[buttonId,iconId]of[['mute','muteIcon'],['youtubeMute','youtubeMuteIcon']]){const button=$(buttonId),iconEl=$(iconId);if(!button||!iconEl)continue;setIcon(iconId,muted?'volume-high':'volume-off');button.classList.toggle('muted',muted);button.ariaLabel=button.title=label}}
+function scheduleVolumePoll(delay=4000){clearTimeout(volumePollTimer);volumePollTimer=setTimeout(pollVolume,delay)}
+async function pollVolume(){if(document.hidden||!window.skeletonTabActive?.()||volumeDragging){scheduleVolumePoll((document.hidden||!window.skeletonTabActive?.())?30000:1200);return}if(mediaPushHealthy()){scheduleVolumePoll(30000);return}if(volumePollBusy){scheduleVolumePoll(4000);return}volumePollBusy=true;const seq=++volumePollSeq;try{const[r,j]=await jf('/api/volume',{cache:'no-store'});if(r.ok&&seq===volumePollSeq)renderVolume(j)}catch(e){}finally{volumePollBusy=false;scheduleVolumePoll(4000)}}
+async function setVolume(level,final=false){level=Number(level);const seq=++volumeSeq;volumePollSeq++;currentVolume=level;if(level>0)lastNonzero=level;try{const[r,j]=await jf('/api/volume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level})});if(!r.ok)throw new Error(j.error||'Помилка');if(seq===volumeSeq)renderVolume(j)}catch(e){if(final)message(e.message||'Home Edge недоступний',true)}finally{if(final)volumeDragging=false}}
+function queueVolume(level){clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>setVolume(level,false),90)}
+function toggleMute(){setVolume(currentVolume===0?lastNonzero:0,true)}
+function stepVolume(delta){setVolume(Math.max(0,Math.min(100,currentVolume+Number(delta))),true)}
+function renderHyperion(h){if(!h||h.error)return;const enabled=!!h.enabled;$('hyperionSwitch').checked=enabled;$('hyperionSwitch').disabled=false;$('hyperionIcon').classList.toggle('active',enabled);$('hyperionIcon').title=enabled?'Підсвітка увімкнена':'Підсвітка вимкнена'}
+async function pollHyperion(){try{if(!hyperionBusy&&window.skeletonTabActive?.()){const[r,j]=await jf('/api/hyperion');if(r.ok)renderHyperion(j)}}catch(e){}setTimeout(pollHyperion,(document.hidden||!window.skeletonTabActive?.())?30000:10000)}
+async function setHyperion(enabled){hyperionBusy=true;$('hyperionSwitch').disabled=true;try{const[r,j]=await jf('/api/hyperion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});if(r.ok)renderHyperion(j);else{message(j.error||'Помилка',true);const[s,h]=await jf('/api/hyperion');if(s.ok)renderHyperion(h)}}catch(e){message('Home Edge недоступний',true)}finally{hyperionBusy=false;$('hyperionSwitch').disabled=false}}
+document.querySelectorAll('[data-youtube-nav]').forEach(button=>{button.addEventListener('pointerdown',event=>{event.preventDefault();youtubeNav(button.dataset.youtubeNav,button)},{passive:false});button.addEventListener('click',event=>{if(event.detail===0){event.preventDefault();youtubeNav(button.dataset.youtubeNav,button)}})});
+const tvList=$('tvChannelList');for(const ev of ['pointerdown','touchstart','wheel'])tvList.addEventListener(ev,holdTvScroll,{passive:true});tvList.addEventListener('scroll',()=>{if(tvList.matches(':active'))holdTvScroll()},{passive:true});
+$('seek').addEventListener('pointerdown',()=>{if(!$('seek').disabled)dragging=true});$('seek').addEventListener('input',()=>{if($('seek').disabled)return;fillRange($('seek'),Number($('seek').value),0,Number($('seek').max));$('positionText').textContent=fmt($('seek').value)});$('seek').addEventListener('change',async()=>{if($('seek').disabled||$('seek').hidden){dragging=false;return}const pos=Number($('seek').value);try{const[r,j]=await jf('/api/seek',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:pos})});if(j.player)renderPlayer(j.player);if(!r.ok)message(j.error||'Помилка',true)}catch(e){message('Помилка перемотування',true)}finally{dragging=false}});
+$('volume').addEventListener('pointerdown',()=>volumeDragging=true);$('volume').addEventListener('input',()=>{const v=Number($('volume').value);currentVolume=v;if(v>0)lastNonzero=v;$('volumeValue').textContent=`${v}%`;positionVolumeLabel(v);fillRange($('volume'),v,0,100);queueVolume(v)});$('volume').addEventListener('change',()=>{clearTimeout(volumeTimer);setVolume($('volume').value,true)});
+function refreshAll(showNotice=true){scheduleModePoll(0);schedulePlayerPoll(0);scheduleVolumePoll(0);if(showNotice)message('Оновлюю…');return Promise.resolve()}
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(r=>r.update()).catch(()=>{}));
+function revivePoster(){clearTimeout(posterRetryTimer);posterRetryTimer=null;posterLastAttemptAt=0;if(lastPlayerState?.running)renderPoster(lastPlayerState,currentMode==='kiosk'&&currentBackend==='youtube-web')}
+function resumeHomeRuntime(){
+  if(document.visibilityState==='hidden')return;
+  revivePoster();
+  refreshAll(false);
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeHomeRuntime()});
+window.addEventListener('pageshow',resumeHomeRuntime);
+window.addEventListener('skeleton:tab-visibility',e=>{if(e.detail?.active)resumeHomeRuntime()});
+
+window.addEventListener('focus',resumeHomeRuntime);
+window.addEventListener('online',resumeHomeRuntime);
+window.addEventListener('resize',()=>{positionVolumeLabel(currentVolume);updateTitleMarquee();if(currentMode==='tv')activateTvProgrammeMarquees()},{passive:true});
+pollMode();pollPlayer();pollVolume();pollYoutubeContext();
+</script>
+</body></html>

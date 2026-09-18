@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.home_edge import media_display_ownership as ownership
+from skeleton_media.home_edge import media_display_ownership as ownership
 
 
 def test_desktop_video_playing_is_owner() -> None:

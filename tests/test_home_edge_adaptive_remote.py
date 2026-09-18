@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from core.home_edge.adaptive_remote import (
+from skeleton_media.home_edge.adaptive_remote import (
     BROKER_MAPPING,
     BUTTON_ALLOWLIST,
     CONTROL_BUTTONS_BY_INTERFACE,

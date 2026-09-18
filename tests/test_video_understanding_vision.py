@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
-from core.video_understanding.subprocess_tools import CommandResult
-from core.video_understanding.vision import average_hash, build_frame_artifacts, hamming_distance, select_frame_timestamps
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.subprocess_tools import CommandResult
+from skeleton_media.video_understanding.vision import average_hash, build_frame_artifacts, hamming_distance, select_frame_timestamps
 
 
 def config(tmp_path: Path) -> VideoRuntimeConfig:

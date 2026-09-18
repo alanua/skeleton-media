@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from core.video_understanding.models import VideoUnderstandingError
-from core.video_understanding.runtime_install import (
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_install import (
     PILLOW_VERSION,
     VIBE_SHA256,
     VIBE_VERSION,
@@ -77,7 +77,7 @@ def test_exact_download_rejects_hash_mismatch(tmp_path: Path, monkeypatch) -> No
 
     payload_holder = [payload]
     monkeypatch.setattr(
-        "core.video_understanding.runtime_install.urllib.request.urlopen",
+        "skeleton_media.video_understanding.runtime_install.urllib.request.urlopen",
         lambda request, timeout: Response(),
     )
     target = tmp_path / "asset"
@@ -110,7 +110,7 @@ def test_exact_download_promotes_verified_bytes(tmp_path: Path, monkeypatch) -> 
 
     payload_holder = [payload]
     monkeypatch.setattr(
-        "core.video_understanding.runtime_install.urllib.request.urlopen",
+        "skeleton_media.video_understanding.runtime_install.urllib.request.urlopen",
         lambda request, timeout: Response(),
     )
     target = tmp_path / "asset"
@@ -137,7 +137,7 @@ def test_mandatory_provider_missing_uses_provider_reason_code(
     reason_code: str,
 ) -> None:
     monkeypatch.setattr(
-        "core.video_understanding.runtime_install.shutil.which",
+        "skeleton_media.video_understanding.runtime_install.shutil.which",
         lambda requested: None,
     )
 
@@ -150,7 +150,7 @@ def test_mandatory_provider_missing_uses_provider_reason_code(
 
 def test_unknown_mandatory_provider_name_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
-        "core.video_understanding.runtime_install.shutil.which",
+        "skeleton_media.video_understanding.runtime_install.shutil.which",
         lambda requested: None,
     )
 
@@ -171,7 +171,7 @@ def test_mandatory_provider_resolution_uses_strict_resolved_executable(
     link = tmp_path / "ffmpeg"
     link.symlink_to(target)
     monkeypatch.setattr(
-        "core.video_understanding.runtime_install.shutil.which",
+        "skeleton_media.video_understanding.runtime_install.shutil.which",
         lambda requested: str(link),
     )
 

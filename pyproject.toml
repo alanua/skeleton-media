@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skeleton-media"
+version = "0.1.0"
+description = "Media subsystem for Skeleton Home Edge"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "Flask>=3.0,<4",
+  "PyYAML>=6.0",
+  "requests>=2.31,<3",
+  "lxml>=5,<7",
+  "beautifulsoup4>=4.12,<5",
+  "Pillow>=10,<13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[tool.setuptools.packages.find]
+include = ["skeleton_media*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "ops/skeleton_cast/runtime"]

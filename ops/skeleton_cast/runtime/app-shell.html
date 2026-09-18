@@ -1,0 +1,31 @@
+<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a0d10"><title>Home</title><link rel="manifest" href="/static/manifest.webmanifest"><link rel="stylesheet" href="/static/ui.css?v=129"></head><body class="home-app-shell" data-build="v131">
+<main id="homeShellViews" class="home-shell-views" aria-live="off">
+  <iframe class="home-shell-view" data-tab="phone" title="Головна" allow="autoplay; fullscreen" referrerpolicy="same-origin"></iframe>
+  <iframe class="home-shell-view" data-tab="video" title="Відео" allow="autoplay; fullscreen" referrerpolicy="same-origin"></iframe>
+  <iframe class="home-shell-view" data-tab="sk" title="СК" allow="autoplay; fullscreen" referrerpolicy="same-origin"></iframe>
+  <iframe class="home-shell-view" data-tab="devices" title="Пристрої" allow="autoplay; fullscreen" referrerpolicy="same-origin"></iframe>
+</main>
+<nav class="bottom-nav home-shell-nav" aria-label="Навігація">
+ <button class="nav-item" type="button" data-shell-tab="phone"><span class="mdi" style="--icon:url('/static/icons/mdi/home.svg')"></span><span>Головна</span></button>
+ <button class="nav-item" type="button" data-shell-tab="video"><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span><span>Відео</span></button>
+ <button class="nav-item" type="button" data-shell-tab="sk"><span class="mdi" style="--icon:url('/static/icons/mdi/monitor-dashboard.svg')"></span><span>СК</span></button>
+ <button class="nav-item" type="button" data-shell-tab="devices"><span class="mdi" style="--icon:url('/static/icons/mdi/devices.svg')"></span><span>Пристрої</span></button>
+</nav>
+<script>
+(()=>{'use strict';
+const BUILD='v131', valid=new Set(['phone','video','sk','devices']), frames=new Map([...document.querySelectorAll('[data-tab]')].map(x=>[x.dataset.tab,x])), buttons=[...document.querySelectorAll('[data-shell-tab]')];
+let active='',loaded=new Set(),buildTimer=0;
+function route(){const p=location.pathname.replace(/^\//,'')||'phone';return valid.has(p)?p:'phone'}
+function queryFor(tab){return tab==='video'?location.search:''}
+function srcFor(tab){return '/view/'+tab+queryFor(tab)}
+function notify(tab,on){const f=frames.get(tab);try{f?.contentWindow?.postMessage({type:'skeleton:tab-active',active:!!on},location.origin)}catch(_){}}
+function ensure(tab){const f=frames.get(tab);if(!f||loaded.has(tab))return;loaded.add(tab);f.src=srcFor(tab);f.addEventListener('load',()=>notify(tab,tab===active),{passive:true})}
+function activate(tab,push=false,search=''){if(!valid.has(tab))tab='phone';if(tab==='video'&&search&&location.search!==search){if(push)history.pushState({tab},'',`/video${search}`);else history.replaceState({tab},'',`/video${search}`)}else if(push&&route()!==tab)history.pushState({tab},'',`/${tab}`);const previous=active;active=tab;ensure(tab);for(const[t,f]of frames){const on=t===tab;f.classList.toggle('active',on);f.setAttribute('aria-hidden',String(!on));notify(t,on)}for(const b of buttons)b.classList.toggle('active',b.dataset.shellTab===tab);if(previous&&previous!==tab)notify(previous,false)}
+buttons.forEach(b=>b.addEventListener('click',()=>activate(b.dataset.shellTab,true)));
+window.addEventListener('message',e=>{if(e.origin!==location.origin||!e.data)return;if(e.data.type==='skeleton:navigate'){const u=new URL(String(e.data.path||'/phone'),location.origin),tab=u.pathname.replace(/^\//,'');if(valid.has(tab))activate(tab,true,u.search)}});
+window.addEventListener('popstate',()=>activate(route(),false,location.search));
+async function checkBuild(){clearTimeout(buildTimer);let native='';try{native=String(window.HomeApp?.appVersion?.()||'').trim()}catch(_){}try{const q=native?'?native='+encodeURIComponent(native):'';const r=await fetch('/api/ui/build'+q,{cache:'no-store'}),j=await r.json();if(r.ok&&j.build&&j.build!==BUILD){location.reload();return}}catch(_){}buildTimer=setTimeout(checkBuild,60000)}
+activate(route(),false,location.search); setTimeout(checkBuild,800);
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').then(r=>r.update()).catch(()=>{}));
+})();
+</script></body></html>

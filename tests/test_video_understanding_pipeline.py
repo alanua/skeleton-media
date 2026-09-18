@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from core.video_understanding.artifact_store import PrivateArtifactStore
-from core.video_understanding.intake_adapters import AcquiredSource, SourceMetadata
-from core.video_understanding.models import ProcessingMode
-from core.video_understanding.pipeline import VideoPipeline
-from core.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
-from core.video_understanding.url_classifier import classify_local_reference
+from skeleton_media.video_understanding.artifact_store import PrivateArtifactStore
+from skeleton_media.video_understanding.intake_adapters import AcquiredSource, SourceMetadata
+from skeleton_media.video_understanding.models import ProcessingMode
+from skeleton_media.video_understanding.pipeline import VideoPipeline
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.url_classifier import classify_local_reference
 
 
 SECTIONS = {

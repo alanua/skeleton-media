@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from core.video_understanding.manifest import ArtifactEntry, build_manifest, verify_inventory
-from core.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.manifest import ArtifactEntry, build_manifest, verify_inventory
+from skeleton_media.video_understanding.models import VideoUnderstandingError
 
 
 HASH_A = "a" * 64
