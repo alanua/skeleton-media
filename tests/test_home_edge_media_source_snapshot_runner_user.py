@@ -12,7 +12,7 @@ def test_snapshot_signer_sudoers_is_bound_only_to_canonical_runner_service_user(
 
     assert 'RUNNER_USER="agent"' in installer
     assert 'RUNNER_SERVICE="skeleton-runner-poll.service"' in installer
-    assert "/usr/bin/systemctl show --property=User --value "$RUNNER_SERVICE"" in installer
+    assert '/usr/bin/systemctl show --property=User --value "$RUNNER_SERVICE"' in installer
     assert '[[ "$actual_runner_user" != "$RUNNER_USER" ]]' in installer
     assert "live Runner service user does not match canonical agent account" in installer
     assert "SUDO_USER" not in installer
