@@ -131,7 +131,7 @@ def test_expected_revision_rejects_boolean() -> None:
 
 
 def test_adapter_contains_no_direct_sqlite_or_database_path() -> None:
-    source = Path("core/video_understanding/memory_gateway_adapter.py").read_text()
+    source = Path("skeleton_media/video_understanding/memory_gateway_adapter.py").read_text()
     lowered = source.casefold()
     assert "import sqlite3" not in lowered
     assert ".sqlite" not in lowered

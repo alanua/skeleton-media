@@ -132,7 +132,7 @@ def test_doctor_failure_is_aggregate_only(tmp_path: Path) -> None:
 
 def test_live_runtime_module_has_no_direct_sqlite(tmp_path: Path) -> None:
     del tmp_path
-    source = Path("core/video_understanding/live_runtime.py").read_text(
+    source = Path("skeleton_media/video_understanding/live_runtime.py").read_text(
         encoding="utf-8"
     ).casefold()
     assert "import sqlite3" not in source

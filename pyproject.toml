@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
+video-understanding = [
+  "pillow==12.2.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["skeleton_media*"]

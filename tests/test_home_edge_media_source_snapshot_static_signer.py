@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD_PATH = ROOT / "scripts/home_edge_media_source_snapshot_signer_payload.py"
 WRAPPER_PATH = ROOT / "scripts/home_edge_media_source_snapshot_signer"
 INSTALLER_PATH = ROOT / "scripts/install_home_edge_media_source_snapshot_signer.sh"
-CONTRACT_REPO_PATH = "core/home_edge/media_source_snapshot.py"
+CONTRACT_REPO_PATH = "skeleton_media/home_edge/media_source_snapshot.py"
 
 
 def _load_payload():

@@ -85,7 +85,7 @@ def test_multimedia_profile_is_selected_from_active_mode() -> None:
 
 
 def test_no_title_specific_or_game_specific_profile_strings_or_selectors() -> None:
-    source = (ROOT / "core/home_edge/adaptive_remote.py").read_text(encoding="utf-8").lower()
+    source = (ROOT / "skeleton_media/home_edge/adaptive_remote.py").read_text(encoding="utf-8").lower()
     forbidden = ("ark" + "anoid", "pong", "tetris", "pac" + "man", "breakout")
 
     assert not any(value in source for value in forbidden)
@@ -204,7 +204,7 @@ def test_offline_reference_does_not_touch_live_tv_or_send_input() -> None:
 
 
 def test_functional_phone_ui_matches_contract_and_has_three_remote_tabs() -> None:
-    source = (ROOT / "core/home_edge/static/adaptive_remote.html").read_text(encoding="utf-8")
+    source = (ROOT / "skeleton_media/home_edge/static/adaptive_remote.html").read_text(encoding="utf-8")
 
     assert re.findall(r'data-view="([^"]+)"', source) == ["pult", "touchpad", "keyboard"]
     assert set(re.findall(r'data-gamepad="([^"]+)"', source)) == CONTROL_BUTTONS_BY_INTERFACE[ControlInterface.GAMEPAD]

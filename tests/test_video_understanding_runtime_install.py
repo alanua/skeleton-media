@@ -213,7 +213,7 @@ def test_units_use_fixed_worker_and_no_shell(tmp_path: Path) -> None:
 
 
 def test_install_module_has_no_direct_sqlite_or_arbitrary_shell() -> None:
-    source = Path("core/video_understanding/runtime_install.py").read_text(
+    source = Path("skeleton_media/video_understanding/runtime_install.py").read_text(
         encoding="utf-8"
     ).casefold()
     assert "import sqlite3" not in source
