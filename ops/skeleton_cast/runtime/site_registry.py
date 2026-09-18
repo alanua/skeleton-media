@@ -46,6 +46,7 @@ def load() -> dict[str, Any]:
 
 
 def save(data: dict[str, Any]) -> None:
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
