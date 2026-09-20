@@ -478,6 +478,50 @@ def suspend_current_vod(reason: str = 'before_mode_switch') -> dict[str, Any]:
     return {'suspended': True, 'snapshot': snapshot, 'last_vod': last_vod_status()}
 
 
+def _save_competing_vod_for_browser(reason: str) -> dict[str, Any]:
+    if not _player_active():
+        return {'suspended': False, 'reason': 'no_active_mpv'}
+    if _current_tv_mode() == 'mpv':
+        return suspend_current_vod(reason)
+    try:
+        current = json.loads(CURRENT.read_text(encoding='utf-8'))
+    except Exception:
+        current = {}
+    if current.get('live') or current.get('backend') == 'iptv':
+        return {'suspended': False, 'reason': 'live_stream'}
+    resolved = _job_source_from_current(current)
+    if resolved is None:
+        return {'suspended': False, 'reason': 'unresolved_vod'}
+    job, source = resolved
+    try:
+        command(['set_property', 'pause', True], timeout=3.0)
+        time.sleep(0.1)
+        position = command(['get_property', 'time-pos']).get('data')
+        duration = command(['get_property', 'duration']).get('data')
+        eof = command(['get_property', 'eof-reached']).get('data')
+        paused = bool(command(['get_property', 'pause']).get('data'))
+    except Exception:
+        return {'suspended': False, 'reason': 'snapshot_failed'}
+    if not isinstance(position, (int, float)) or position < 0:
+        return {'suspended': False, 'reason': 'invalid_position'}
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        duration = float(source.get('duration') or 0.0)
+    snapshot = _save_progress_snapshot(job, source, float(position), float(duration), bool(eof), reason)
+    _write_last_vod(job, source, float(snapshot.get('position_seconds') or position), float(snapshot.get('duration_seconds') or duration), paused, reason)
+    try:
+        trakt_sync.enqueue_progress(job, source, snapshot, paused, reason)
+    except Exception:
+        pass
+    return {'suspended': True, 'snapshot': snapshot, 'last_vod': last_vod_status()}
+
+
+def _stop_competing_mpv_before_browser(reason: str) -> dict[str, Any]:
+    saved = _save_competing_vod_for_browser(reason)
+    if _player_active():
+        stop()
+    return saved
+
+
 def restore_last_vod() -> dict[str, Any]:
     current_mode = mode_status(include_transition=False)
     if _player_active():
@@ -1578,49 +1622,39 @@ def switch_mode(mode: str) -> dict[str, Any]:
         _set_display_refresh(60)
     same_live_mode = current.get('mode') == normalized
     if same_live_mode:
-        if normalized == 'kiosk':
-            # A live/IPTV MPV surface must never coexist with the YouTube kiosk.
-            # If an orphan MPV survives without its socket/PID state, re-run the
-            # canonical kiosk mode entrypoint so its robust stop_mpv() cleanup
-            # removes the competing surface before YouTube is re-focused.
+        if normalized in {'kiosk', 'chrome'}:
+            had_active_mpv = _player_active()
             if _named_process_running('mpv') and not _player_active():
-                _start_user_unit(TV_MODE_UNIT_TEMPLATE.format('kiosk'))
-            if _player_active():
-                try:
-                    active_record = json.loads(CURRENT.read_text(encoding='utf-8'))
-                except Exception:
-                    active_record = {}
-                if active_record.get('live') or active_record.get('backend') == 'iptv':
-                    stop()
-                    CURRENT.unlink(missing_ok=True)
-                    IPTV_TRANSITION.unlink(missing_ok=True)
+                _start_user_unit(TV_MODE_UNIT_TEMPLATE.format(normalized))
+            saved = _stop_competing_mpv_before_browser('before_browser_focus')
+            if normalized == 'chrome':
+                if had_active_mpv:
+                    _start_user_unit(TV_MODE_UNIT_TEMPLATE.format('chrome'))
+                return {**mode_status(), 'unchanged': True, 'transition': 'browser-refresh', 'saved_vod': bool(saved.get('suspended'))}
             activation = _activate_kiosk_in_place()
             if _player_active():
-                try:
-                    active_record = json.loads(CURRENT.read_text(encoding='utf-8'))
-                except Exception:
-                    active_record = {}
-                if active_record.get('live') or active_record.get('backend') == 'iptv':
-                    raise RuntimeError('YouTube kiosk activated while live TV backend remained active')
-            return {**mode_status(), 'unchanged': True, 'transition': 'in-place-refresh', 'activation': activation}
+                raise RuntimeError('YouTube kiosk activated while MPV backend remained active')
+            return {**mode_status(), 'unchanged': True, 'transition': 'in-place-refresh', 'activation': activation, 'saved_vod': bool(saved.get('suspended'))}
         return {**current, 'unchanged': True, 'transition': 'none'}
 
-    parked_vod = False
+    saved_vod = False
     if current.get('mode') == 'mpv':
         suspended = suspend_current_vod('before_mode_switch')
-        parked_vod = bool(suspended.get('suspended')) and normalized in {'kiosk', 'chrome'}
-        if not parked_vod:
-            stop()
+        saved_vod = bool(suspended.get('suspended')) and normalized in {'kiosk', 'chrome'}
+        stop()
     elif current.get('mode') == 'tv':
         # Live TV is stopped, never parked in a growing paused buffer.
         stop()
+    elif normalized in {'kiosk', 'chrome'} and _player_active():
+        suspended = _stop_competing_mpv_before_browser('before_mode_switch')
+        saved_vod = bool(suspended.get('suspended'))
     if normalized not in {'kiosk', 'chrome'}:
         CURRENT.unlink(missing_ok=True)
     _start_user_unit(TV_MODE_UNIT_TEMPLATE.format(normalized))
-    if parked_vod and normalized == 'kiosk':
-        transition = 'warm-vod-to-kiosk'
-    elif parked_vod and normalized == 'chrome':
-        transition = 'warm-vod-to-chrome'
+    if saved_vod and normalized == 'kiosk':
+        transition = 'saved-vod-to-kiosk'
+    elif saved_vod and normalized == 'chrome':
+        transition = 'saved-vod-to-chrome'
     else:
         transition = 'warm-kiosk-restore' if normalized == 'kiosk' and _named_process_running('chrome') else 'mode-switch'
-    return {**mode_status(), 'unchanged': False, 'transition': transition, 'parked_vod': parked_vod}
+    return {**mode_status(), 'unchanged': False, 'transition': transition, 'saved_vod': saved_vod, 'parked_vod': False}
