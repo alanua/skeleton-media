@@ -53,7 +53,6 @@ player_stub.control = lambda *_args, **_kwargs: {}
 player_stub.mode_status = lambda *args, **kwargs: {"mode": "mpv"}
 player_stub.switch_mode = lambda mode: {"mode": mode}
 player_stub.command = lambda *_args, **_kwargs: {"error": "success"}
-sys.modules.setdefault("player", player_stub)
 
 resolver_stub = types.ModuleType("resolver")
 
@@ -63,9 +62,20 @@ class _ResolverError(Exception):
 resolver_stub.BrowserChallengeError = _ResolverError
 resolver_stub.OriginProtectedError = _ResolverError
 resolver_stub.resolve_page = lambda url: {"title": url, "sources": []}
-sys.modules.setdefault("resolver", resolver_stub)
 
-import app as cast_app  # noqa: E402
+_MISSING = object()
+_prior_player = sys.modules.get("player", _MISSING)
+_prior_resolver = sys.modules.get("resolver", _MISSING)
+sys.modules["player"] = player_stub
+sys.modules["resolver"] = resolver_stub
+try:
+    import app as cast_app  # noqa: E402
+finally:
+    for _name, _prior in (("player", _prior_player), ("resolver", _prior_resolver)):
+        if _prior is _MISSING:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _prior
 
 
 JOB_ID = "a" * 16
@@ -327,6 +337,11 @@ def test_wired_capability_is_not_degraded_by_wifi_policy(monkeypatch, tmp_path: 
 def test_receiver_status_endpoint_uses_stable_device_id_not_ip(monkeypatch, tmp_path: Path) -> None:
     fake = FakePlayer()
     _install_runtime(monkeypatch, tmp_path, fake)
+    monkeypatch.setattr(
+        cast_app,
+        "jsonify",
+        lambda *args, **kwargs: args[0] if args else kwargs,
+    )
 
     monkeypatch.setattr(
         cast_app,
