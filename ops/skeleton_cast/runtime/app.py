@@ -70,8 +70,10 @@ _REMOTE_STATUS_CACHE: dict[str, object] = {'at': 0.0, 'mode': None, 'data': None
 _MEDIA_SEARCH_BREAKER = media_search.CircuitBreaker()
 _MEDIA_RELEASE_TRACKING = media_search.ReleaseTrackingStore()
 MEDIA_TARGET_STATE = STATE / 'media-target.json'
-SAMSUNG_RECEIVER_DESIRED = STATE / 'samsung-receiver-desired.json'
-SAMSUNG_RECEIVER_STATUS = STATE / 'samsung-receiver-status.json'
+SAMSUNG_MEDIA_DESIRED = STATE / 'samsung-media-desired.json'
+SAMSUNG_MEDIA_STATUS = STATE / 'samsung-media-status.json'
+SAMSUNG_RECEIVER_DESIRED = SAMSUNG_MEDIA_DESIRED
+SAMSUNG_RECEIVER_STATUS = SAMSUNG_MEDIA_STATUS
 SAMSUNG_DEVICE_ID = 'samsung_kiosk'
 TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
 MEDIA_TARGET_POSITION_TOLERANCE_SECONDS = 12.0
@@ -110,27 +112,56 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-TRUSTED_CLIENT_IDS = tuple(item.strip() for item in os.environ.get('SKELETON_MEDIA_TRUSTED_CLIENT_IDS', '').split(',') if item.strip())
+HOME_EDGE_DEVICE_ID = 'home_edge_01'
+TRUSTED_CLIENT_IDS = tuple(
+    dict.fromkeys(
+        [item.strip() for item in os.environ.get('SKELETON_MEDIA_TRUSTED_CLIENT_IDS', '').split(',') if item.strip()]
+        + [SAMSUNG_DEVICE_ID]
+    )
+)
 
 
-def _client_identities() -> list[tuple[str, str, str]]:
-    identities: list[tuple[str, str, str]] = []
+def _identity_values(value: object) -> list[dict]:
+    if not value:
+        return []
+    if isinstance(value, dict):
+        if any(key in value for key in ('ipv4', 'tailscale_ipv4', 'mac')):
+            return [value]
+        return [item for item in value.values() if isinstance(item, dict)]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _trusted_identity_records() -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
     try:
         data = yaml.safe_load(REGISTRY.read_text(encoding='utf-8')) or {}
         devices = data.get('devices') or {}
-        for device_id in TRUSTED_CLIENT_IDS:
+        for device_id in tuple(dict.fromkeys([*TRUSTED_CLIENT_IDS, SAMSUNG_DEVICE_ID])):
             device = devices.get(device_id) or {}
-            if not device.get('operator_confirmed') or device.get('role') not in ('android_phone', 'ios_phone', 'tablet_kiosk'):
+            if not device.get('operator_confirmed'):
+                continue
+            role = device.get('role')
+            if device_id != SAMSUNG_DEVICE_ID and role not in ('android_phone', 'ios_phone', 'tablet_kiosk'):
                 continue
             identifiers = device.get('identifiers') or {}
-            ip = str(identifiers.get('ipv4') or '').strip()
-            mac = str(identifiers.get('mac') or '').strip().lower()
-            tailscale_ip = str(identifiers.get('tailscale_ipv4') or '').strip()
-            if ip or mac or tailscale_ip:
-                identities.append((ip, mac, tailscale_ip))
+            identity_sets = [identifiers]
+            identity_sets.extend(_identity_values(device.get('lan_identities')))
+            identity_sets.extend(_identity_values(identifiers.get('lan_identities')))
+            for identity in identity_sets:
+                ip = str(identity.get('ipv4') or '').strip()
+                mac = str(identity.get('mac') or '').strip().lower()
+                tailscale_ip = str(identity.get('tailscale_ipv4') or '').strip()
+                if ip or mac or tailscale_ip:
+                    records.append({'device_id': device_id, 'ipv4': ip, 'mac': mac, 'tailscale_ipv4': tailscale_ip})
     except Exception:
         pass
-    return identities
+    return records
+
+
+def _client_identities() -> list[tuple[str, str, str]]:
+    return [(item['ipv4'], item['mac'], item['tailscale_ipv4']) for item in _trusted_identity_records()]
 
 
 def _neighbor_mac(ip: str) -> str | None:
@@ -162,6 +193,26 @@ def _trusted() -> bool:
 def _require() -> None:
     if not _trusted():
         abort(403, description='Доступ дозволено лише підтвердженим сімейним пристроям через домашню мережу або Tailscale.')
+
+
+def _request_device_id() -> str:
+    ip = request.remote_addr or ''
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return 'unknown'
+    if addr.is_loopback:
+        return HOME_EDGE_DEVICE_ID
+    records = _trusted_identity_records()
+    for record in records:
+        if ip == record['ipv4'] or (record['tailscale_ipv4'] and ip == record['tailscale_ipv4']):
+            return record['device_id']
+    observed_mac = _neighbor_mac(ip)
+    if observed_mac:
+        for record in records:
+            if record['mac'] and observed_mac == record['mac']:
+                return record['device_id']
+    return 'unknown'
 
 
 def _page_url(text: str) -> tuple[str, str, str]:
@@ -1003,6 +1054,8 @@ def _playback_position(status: dict) -> float:
 def _playback_paused(status: dict) -> bool:
     if isinstance(status.get('pause'), bool):
         return bool(status.get('pause'))
+    if str(status.get('mode') or '').strip().lower() in {'video', 'tv'} and isinstance(status.get('playing'), bool):
+        return not bool(status.get('playing'))
     state = str(status.get('playback_state') or status.get('playback_status') or '').strip().lower()
     return state in {'paused', 'pause'}
 
@@ -1092,32 +1145,50 @@ def _adapt_source_for_samsung(job: dict, current_source: dict) -> dict:
 def _next_samsung_revision() -> int:
     desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
     status = _read_json(SAMSUNG_RECEIVER_STATUS)
-    return max(int(desired.get('revision') or 0), int(status.get('ack_revision') or 0)) + 1
+    return max(int(desired.get('revision') or 0), int(status.get('revision') or 0)) + 1
 
 
-def _write_samsung_desired(job: dict, source: dict, *, position: float, paused: bool) -> dict:
+def _samsung_action_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _write_samsung_desired(job: dict, source: dict, *, position: float) -> dict:
     revision = _next_samsung_revision()
     desired = {
-        'schema': 'skeleton.samsung.receiver.desired.v1',
-        'device_id': SAMSUNG_DEVICE_ID,
+        'schema': 'skeleton.samsung.media_desired.v1',
         'revision': revision,
+        'mode': 'video',
+        'url': source.get('url'),
+        'position_seconds': round(max(0.0, float(position)), 3),
+        'action': 'play',
+        'action_id': _samsung_action_id(),
         'updated_at': int(time.time()),
-        'media': {
-            'job_id': job.get('job_id'),
-            'source_id': source.get('source_id'),
-            'title': job.get('title') or source.get('title') or source.get('page_title'),
-            'url': source.get('url'),
-            'headers': source.get('headers') or {},
-            'quality': source.get('quality'),
-            'height': _source_height(source),
-            'translation': source.get('translation'),
-            'season': source.get('season'),
-            'episode': source.get('episode'),
-            'position_seconds': round(max(0.0, float(position)), 3),
-            'paused': bool(paused),
-            'playback_state': 'paused' if paused else 'playing',
-        },
+        'job_id': job.get('job_id'),
+        'source_id': source.get('source_id'),
+        'display_title': job.get('title') or source.get('title') or source.get('page_title'),
+        'poster': job.get('poster') or source.get('poster'),
+        'episode': source.get('episode'),
+        'season': source.get('season'),
+        'quality': source.get('quality'),
+        'translation': source.get('translation'),
+        'media_title': job.get('title') or source.get('title') or source.get('page_title'),
+        'channel_id': source.get('channel_id'),
+        'channel_number': source.get('channel_number'),
+        'picon': source.get('picon'),
     }
+    _atomic(SAMSUNG_RECEIVER_DESIRED, desired)
+    return desired
+
+
+def _write_samsung_action(action: str) -> dict:
+    desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
+    if not desired:
+        raise RuntimeError('Samsung не має активного бажаного стану для керування.')
+    desired.update({
+        'action': action,
+        'action_id': _samsung_action_id(),
+        'updated_at': int(time.time()),
+    })
     _atomic(SAMSUNG_RECEIVER_DESIRED, desired)
     return desired
 
@@ -1135,10 +1206,13 @@ def _samsung_receiver_status() -> dict:
 
 
 def _destination_verified(status: dict, *, revision: int, source_id: object, position: float, paused: bool) -> bool:
-    if int(status.get('ack_revision') or 0) < int(revision):
+    if int(status.get('revision') or 0) < int(revision):
         return False
     media = _receiver_media(status)
-    if str(media.get('source_id') or '') != str(source_id or ''):
+    status_source_id = media.get('source_id') or _read_json(SAMSUNG_RECEIVER_DESIRED).get('source_id')
+    if str(status_source_id or '') != str(source_id or ''):
+        return False
+    if 'playing' not in media or not any(key in media for key in ('position_seconds', 'position', 'time-pos', 'time_pos')):
         return False
     if abs(_playback_position(media) - float(position)) > MEDIA_TARGET_POSITION_TOLERANCE_SECONDS:
         return False
@@ -1148,7 +1222,6 @@ def _destination_verified(status: dict, *, revision: int, source_id: object, pos
 
 
 def _wait_for_samsung_postcondition(desired: dict) -> dict:
-    media = desired['media']
     deadline = time.monotonic() + MEDIA_TARGET_WAIT_SECONDS
     last = {}
     while time.monotonic() <= deadline:
@@ -1156,9 +1229,9 @@ def _wait_for_samsung_postcondition(desired: dict) -> dict:
         if _destination_verified(
             last,
             revision=int(desired.get('revision') or 0),
-            source_id=media.get('source_id'),
-            position=float(media.get('position_seconds') or 0.0),
-            paused=bool(media.get('paused')),
+            source_id=desired.get('source_id'),
+            position=float(desired.get('position_seconds') or 0.0),
+            paused=str(desired.get('action') or '').lower() == 'pause',
         ):
             return last
         time.sleep(0.1)
@@ -1190,9 +1263,12 @@ def _tv_session_snapshot() -> tuple[dict, dict, dict]:
 def _samsung_session_snapshot() -> tuple[dict, dict, dict]:
     status = _samsung_receiver_status()
     media = _receiver_media(status)
-    if not media.get('job_id') or not media.get('source_id'):
+    desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
+    job_id = media.get('job_id') or desired.get('job_id')
+    source_id = media.get('source_id') or desired.get('source_id')
+    if not job_id or not source_id:
         raise RuntimeError('Samsung не повідомив відновлювану медіасесію.')
-    job, source = _find_job_source(media.get('job_id'), media.get('source_id'))
+    job, source = _find_job_source(job_id, source_id)
     return status, job, source
 
 
@@ -1209,18 +1285,30 @@ def _switch_media_target(target: str) -> dict:
         position = _playback_position(source_status)
         paused = _playback_paused(source_status)
         samsung_source = _adapt_source_for_samsung(job, current_source)
-        desired = _write_samsung_desired(job, samsung_source, position=position, paused=paused)
+        desired = _write_samsung_desired(job, samsung_source, position=position)
         observed = _wait_for_samsung_postcondition(desired)
+        if paused:
+            desired = _write_samsung_action('pause')
+            observed = _wait_for_samsung_postcondition(desired)
+        else:
+            player.control('pause')
         return {**_set_media_target('samsung', reason='handoff_verified', observed=observed), 'unchanged': False, 'desired': desired}
 
     source_status, job, source = _samsung_session_snapshot()
     media = _receiver_media(source_status)
     position = _playback_position(media)
     paused = _playback_paused(media)
+    was_playing = _playback_playing(media)
     player.play(job, source, 'off')
     player.seek_absolute(position)
     player.control('pause' if paused else 'play')
     observed = _wait_for_tv_postcondition(source_id=source.get('source_id'), position=position, paused=paused)
+    if was_playing:
+        pause_desired = _write_samsung_action('pause')
+        try:
+            _wait_for_samsung_postcondition(pause_desired)
+        except RuntimeError:
+            pass
     return {**_set_media_target('tv', reason='handoff_verified', observed=observed), 'unchanged': False}
 
 
@@ -1283,12 +1371,13 @@ def media_target_get() -> Response:
         'samsung': {
             'device_id': SAMSUNG_DEVICE_ID,
             'desired_revision': desired.get('revision'),
-            'ack_revision': receiver.get('ack_revision'),
+            'revision': receiver.get('revision'),
             'observable': bool(receiver),
         },
     })
 
 
+@app.put('/api/media/target')
 @app.post('/api/media/target')
 def media_target_set() -> Response:
     _require()
@@ -1301,37 +1390,50 @@ def media_target_set() -> Response:
         return jsonify({'error': str(exc), **_media_target_state()}), 409
 
 
-@app.get('/api/samsung/desired')
+@app.get('/api/samsung/media/desired')
 def samsung_desired_get() -> Response:
-    _require()
-    device_id = str(request.args.get('device_id') or SAMSUNG_DEVICE_ID).strip()
-    if device_id != SAMSUNG_DEVICE_ID:
-        return jsonify({'error': 'Unknown Samsung receiver device_id.'}), 404
+    if _request_device_id() != SAMSUNG_DEVICE_ID:
+        abort(403, description='Samsung media endpoint is only available to the confirmed Samsung receiver.')
     desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
     if not desired:
-        return jsonify({'device_id': SAMSUNG_DEVICE_ID, 'revision': 0})
+        return jsonify({'schema': 'skeleton.samsung.media_desired.v1', 'revision': 0, 'mode': 'idle', 'updated_at': 0})
     return jsonify(desired)
 
 
-@app.post('/api/samsung/status')
+def _incoming_has_playback_fields(data: dict) -> bool:
+    return any(key in data for key in ('playing', 'position_seconds', 'position', 'duration_seconds'))
+
+
+@app.post('/api/samsung/media/status')
 def samsung_status_post() -> Response:
-    _require()
-    data = request.get_json(silent=True) or {}
-    device_id = str(data.get('device_id') or SAMSUNG_DEVICE_ID).strip()
+    device_id = _request_device_id()
     if device_id != SAMSUNG_DEVICE_ID:
-        return jsonify({'error': 'Unknown Samsung receiver device_id.'}), 404
-    allowed = {
-        'schema': 'skeleton.samsung.receiver.status.v1',
-        'device_id': SAMSUNG_DEVICE_ID,
-        'ack_revision': _optional_int(data.get('ack_revision')) or 0,
+        abort(403, description='Samsung media endpoint is only available to the confirmed Samsung receiver.')
+    data = request.get_json(silent=True) or {}
+    previous = _samsung_receiver_status()
+    revision = _optional_int(data.get('revision')) or 0
+    allowed = dict(previous)
+    if revision != int(previous.get('revision') or 0) and not _incoming_has_playback_fields(data):
+        for key in ('playing', 'position_seconds', 'position', 'duration_seconds'):
+            allowed.pop(key, None)
+    allowed.update({
+        'schema': 'skeleton.samsung.media_status.v1',
+        'device_id': device_id,
+        'mode': str(data.get('mode') or previous.get('mode') or '')[:40],
+        'revision': revision,
         'updated_at': int(time.time()),
-        'receiver_version': str(data.get('receiver_version') or '')[:80],
-        'playback_state': str(data.get('playback_state') or data.get('playback_status') or '')[:40],
-        'playing': bool(data.get('playing')) if 'playing' in data else None,
-        'pause': bool(data.get('pause')) if 'pause' in data else None,
-        'position_seconds': float(data.get('position_seconds') or data.get('position') or 0.0),
-        'media': data.get('media') if isinstance(data.get('media'), dict) else {},
-    }
+        'app': str(data.get('app') or previous.get('app') or '')[:80],
+    })
+    if 'playing' in data:
+        allowed['playing'] = bool(data.get('playing'))
+    if 'position_seconds' in data or 'position' in data:
+        allowed['position_seconds'] = float(data.get('position_seconds') if 'position_seconds' in data else data.get('position') or 0.0)
+    if 'duration_seconds' in data:
+        allowed['duration_seconds'] = float(data.get('duration_seconds') or 0.0)
+    if data.get('error'):
+        allowed['error'] = str(data.get('error'))[:500]
+    else:
+        allowed.pop('error', None)
     _atomic(SAMSUNG_RECEIVER_STATUS, allowed)
     return jsonify({'status': 'ok', **allowed})
 
