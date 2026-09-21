@@ -123,6 +123,10 @@ class FakePlayer:
         )
         return {"accepted": True}
 
+    def play_browser(self, job: dict, source: dict) -> dict:
+        self.calls.append(("play_browser", source.get("source_id")))
+        return {"accepted": True, "backend": "chrome-browser"}
+
     def seek_absolute(self, position: float) -> dict:
         self.calls.append(("seek", position))
         self.state["time-pos"] = float(position)
@@ -277,6 +281,52 @@ def test_canonical_samsung_routes_and_put_media_target_are_registered() -> None:
     assert any(rule == "/api/samsung/media/status" and "POST" in methods for rule, methods in rules)
     assert any(rule == "/api/media/target" and "PUT" in methods for rule, methods in rules)
     assert not any(rule in {"/api/samsung/desired", "/api/samsung/status"} for rule, _methods in rules)
+
+
+def test_play_routes_browser_source_to_browser_backend(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    browser_source = _source("browser-episode-1", height=0, quality="HTML5 · повний екран")
+    browser_source.update(
+        {
+            "backend": "chrome-browser",
+            "browser_index": 0,
+            "url": "https://moonanime.art/player/episode-1",
+        }
+    )
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._save(_job([browser_source]))
+    monkeypatch.setattr(
+        cast_app,
+        "request",
+        types.SimpleNamespace(
+            get_json=lambda silent=True: {"job_id": JOB_ID, "source_id": "browser-episode-1"},
+        ),
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda value: value)
+
+    result = cast_app.play()
+
+    assert result["status"] == "started"
+    assert result["backend"] == "chrome-browser"
+    assert fake.calls == [("play_browser", "browser-episode-1")]
+
+
+def test_play_keeps_direct_source_on_mpv_backend(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    monkeypatch.setattr(
+        cast_app,
+        "request",
+        types.SimpleNamespace(
+            get_json=lambda silent=True: {"job_id": JOB_ID, "source_id": "src-1080"},
+        ),
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda value: value)
+
+    result = cast_app.play()
+
+    assert result["status"] == "started"
+    assert fake.calls == [("play", "src-1080")]
 
 
 def test_samsung_registry_ip_resolves_to_samsung_device_id(monkeypatch, tmp_path: Path) -> None:

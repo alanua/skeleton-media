@@ -45,7 +45,7 @@ EDIT_TIME = re.compile(r"var\s+dle_edittime\s*=\s*['\"]?(\d+)", re.I)
 
 
 class OriginProtectedError(RuntimeError):
-    """The public origin is protected and retries must be cooled down."""
+    """The public origin returned a confirmed hard block and must cool down."""
 
     def __init__(self, *, url: str, cooldown_remaining_seconds: int) -> None:
         self.url = url
@@ -294,6 +294,7 @@ def _curl_text(
     headers: dict[str, str],
     params: dict[str, str] | None = None,
     timeout: int = 22,
+    allow_rendered_fallback: bool = True,
 ) -> str:
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -372,7 +373,7 @@ def _curl_text(
     # Some public video pages use a JavaScript Cloudflare challenge. A real
     # browser can complete it and return the rendered DOM; curl and yt-dlp cannot.
     # Keep this fallback bounded and only use it for the initial HTML GET.
-    if params is None and parsed.scheme in {"http", "https"}:
+    if allow_rendered_fallback and params is None and parsed.scheme in {"http", "https"}:
         try:
             return _chrome_text(url, timeout=max(65, timeout + 35))
         except (RuntimeError, subprocess.TimeoutExpired) as exc:
@@ -978,7 +979,13 @@ def _page_voice(document: Any) -> str:
     return "Основне джерело"
 
 
-def _playlist_targets(page_url: str, text: str, document: Any) -> list[tuple[str, str, str, int]]:
+def _playlist_targets(
+    page_url: str,
+    text: str,
+    document: Any,
+    *,
+    allow_origin_ajax: bool = True,
+) -> list[tuple[str, str, str, int]]:
     edit_match = EDIT_TIME.search(text)
     edit_time = edit_match.group(1) if edit_match else "0"
     hash_match = re.search(r"var\s+dle_login_hash\s*=\s*['\"]([^'\"]+)", text, re.I)
@@ -1009,6 +1016,9 @@ def _playlist_targets(page_url: str, text: str, document: Any) -> list[tuple[str
         targets.append((candidate, voice, episode, order))
         order += 1
     if targets:
+        return targets
+
+    if not allow_origin_ajax:
         return targets
 
     for element in document.xpath("//*[contains(concat(' ', normalize-space(@class), ' '), ' playlists-ajax ')]"):
@@ -1116,8 +1126,6 @@ def discover(page_url: str) -> tuple[list[tuple[str, str, str, int]], str, str |
 
     if host == "anitube.in.ua" or host.endswith(".anitube.in.ua"):
         remaining = _anitube_cooldown_remaining()
-        if remaining:
-            raise OriginProtectedError(url=page_url, cooldown_remaining_seconds=remaining)
         # AniTube's extensionless route currently serves a persistent challenge,
         # while the canonical DLE article route with .html exposes the same item.
         parsed_page = urlparse(page_url)
@@ -1128,45 +1136,51 @@ def discover(page_url: str) -> tuple[list[tuple[str, str, str, int]], str, str |
         poster: str | None = None
         last_document: Any | None = None
         browser_error: BrowserChallengeError | None = None
+        origin_protected_remaining = remaining
 
         # Attempt 1: direct bounded fetch. It may return a challenge document,
         # so success is accepted only when real playlist targets are present.
-        try:
-            text = _curl_text(page_url, headers=_browser_headers(page_url))
-            document = lxml_html.fromstring(text)
-            last_document = document
-            title = _page_title(document) or title
-            poster = _page_poster(document, page_url)
-            playlist = _playlist_targets(page_url, text, document)
-            if playlist:
-                return playlist, title, poster
-        except OriginProtectedError:
-            raise
-        except BrowserChallengeError as exc:
-            browser_error = exc
-        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
-            pass
+        if not origin_protected_remaining:
+            try:
+                text = _curl_text(
+                    page_url,
+                    headers=_browser_headers(page_url),
+                    allow_rendered_fallback=False,
+                )
+                document = lxml_html.fromstring(text)
+                last_document = document
+                title = _page_title(document) or title
+                poster = _page_poster(document, page_url)
+                playlist = _playlist_targets(page_url, text, document)
+                if playlist:
+                    return playlist, title, poster
+            except OriginProtectedError as exc:
+                origin_protected_remaining = exc.cooldown_remaining_seconds
+            except BrowserChallengeError as exc:
+                browser_error = exc
+            except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+                pass
 
         # Attempt 2: explicit rendered DOM. This is deliberately separate from
         # _curl_text so an AniTube challenge page cannot be mistaken for success.
-        try:
-            text = _chrome_text(page_url, timeout=65)
-            document = lxml_html.fromstring(text)
-            last_document = document
-            title = _page_title(document) or title
-            poster = poster or _page_poster(document, page_url)
-            playlist = _playlist_targets(page_url, text, document)
-            if playlist:
-                return playlist, title, poster
-        except OriginProtectedError:
-            raise
-        except BrowserChallengeError as exc:
-            if exc.challenge_detected:
-                remaining = _mark_anitube_origin_protected(page_url)
-                raise OriginProtectedError(url=page_url, cooldown_remaining_seconds=remaining) from exc
-            browser_error = exc
-        except (ValueError, OSError, subprocess.TimeoutExpired):
-            pass
+        if not origin_protected_remaining:
+            try:
+                text = _chrome_text(page_url, timeout=65)
+                document = lxml_html.fromstring(text)
+                last_document = document
+                title = _page_title(document) or title
+                poster = poster or _page_poster(document, page_url)
+                playlist = _playlist_targets(page_url, text, document)
+                if playlist:
+                    return playlist, title, poster
+            except OriginProtectedError as exc:
+                origin_protected_remaining = exc.cooldown_remaining_seconds
+            except BrowserChallengeError as exc:
+                # A normal JavaScript challenge is not evidence of a hard block.
+                # Keep the diagnostic and continue to the public, read-only mirror.
+                browser_error = exc
+            except (ValueError, OSError, subprocess.TimeoutExpired):
+                pass
 
         # Attempt 3: rendered public mirror, still subject to public URL and
         # SSRF validation. Useful when origin Chromium cannot complete CF.
@@ -1176,11 +1190,16 @@ def discover(page_url: str) -> tuple[list[tuple[str, str, str, int]], str, str |
             last_document = document
             title = _page_title(document) or title
             poster = poster or _page_poster(document, page_url)
-            playlist = _playlist_targets(page_url, text, document)
+            playlist = _playlist_targets(
+                page_url,
+                text,
+                document,
+                allow_origin_ajax=not bool(origin_protected_remaining),
+            )
             if playlist:
                 return playlist, title, poster
-        except OriginProtectedError:
-            raise
+        except OriginProtectedError as exc:
+            origin_protected_remaining = exc.cooldown_remaining_seconds
         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
             pass
 
@@ -1190,6 +1209,11 @@ def discover(page_url: str) -> tuple[list[tuple[str, str, str, int]], str, str |
             found = _generic_embed_scan(last_document, page_url)
             if found:
                 return found, title, poster
+        if origin_protected_remaining:
+            raise OriginProtectedError(
+                url=page_url,
+                cooldown_remaining_seconds=origin_protected_remaining,
+            )
         if browser_error is not None:
             raise browser_error
         raise RuntimeError("AniTube не повернув доступних відеопотоків.")
