@@ -1141,7 +1141,7 @@ def play_browser(job: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
     stop()
     process = subprocess.run(
         [BROWSER_MEDIA, 'play', str(source.get('browser_profile') or job.get('browser_profile') or os.environ.get('SKELETON_MEDIA_BROWSER_PROFILE', 'default')),
-         str(job.get('page_url') or source.get('url') or ''), str(int(source.get('browser_index') or 0)),
+         str(source.get('url') or job.get('page_url') or ''), str(int(source.get('browser_index') or 0)),
          str(job.get('job_id') or ''), str(source.get('source_id') or '')],
         text=True, capture_output=True, timeout=75, check=False,
     )

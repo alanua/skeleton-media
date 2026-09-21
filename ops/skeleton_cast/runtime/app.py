@@ -1475,7 +1475,10 @@ def play() -> Response:
     if source is None:
         return jsonify({'error': 'Потік не знайдено; оновіть список.'}), 404
     try:
-        result = player.play(job, source, str(data.get('subtitles') or 'off'))
+        if source.get('backend') == 'chrome-browser':
+            result = player.play_browser(job, source)
+        else:
+            result = player.play(job, source, str(data.get('subtitles') or 'off'))
         return jsonify({'status': 'started', 'source': {'quality': source.get('quality'), 'translation': source.get('translation')}, **result})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 502
