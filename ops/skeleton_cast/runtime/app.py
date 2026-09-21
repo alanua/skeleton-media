@@ -49,6 +49,9 @@ TV_MODE = HOME / '.local/bin/tv-mode'
 XDOTOOL = '/usr/bin/xdotool'
 CHROME_MEDIA = HOME / '.local/bin/home-edge-chrome-media'
 ANDROID_SERIAL = os.environ.get('SKELETON_MEDIA_ANDROID_SERIAL', '')
+SAMSUNG_MEDIA_CONTROLLER = Path(os.environ.get('SKELETON_SAMSUNG_MEDIA_CONTROLLER', str(Path.home() / '.local/bin/skeleton-samsung-media-controller'))).expanduser()
+SAMSUNG_SMARTTUBE_PACKAGE = 'org.smarttube.stable'
+SAMSUNG_RECEIVER_PACKAGE = 'ua.homeedge.mediareceiver'
 ALLOWED = ('uakino.club', 'uakino.me', 'uakino.best', 'klon.fun', 'ashdi.vip')
 URL_RE = re.compile(r'https?://[^\s<>"\']+', re.I)
 
@@ -72,6 +75,7 @@ _MEDIA_RELEASE_TRACKING = media_search.ReleaseTrackingStore()
 MEDIA_TARGET_STATE = STATE / 'media-target.json'
 SAMSUNG_MEDIA_DESIRED = STATE / 'samsung-media-desired.json'
 SAMSUNG_MEDIA_STATUS = STATE / 'samsung-media-status.json'
+SAMSUNG_MEDIA_MODE = STATE / 'samsung-media-mode.json'
 SAMSUNG_RECEIVER_DESIRED = SAMSUNG_MEDIA_DESIRED
 SAMSUNG_RECEIVER_STATUS = SAMSUNG_MEDIA_STATUS
 SAMSUNG_DEVICE_ID = 'samsung_kiosk'
@@ -1193,6 +1197,214 @@ def _write_samsung_action(action: str) -> dict:
     return desired
 
 
+def _samsung_mode_default() -> dict:
+    now = int(time.time())
+    return {
+        'schema': 'skeleton.samsung.media_mode.v1',
+        'requested_mode': None,
+        'applied_mode': 'idle',
+        'mode': 'idle',
+        'transition': 'idle',
+        'verified': False,
+        'updated_at': now,
+        'verified_at': 0,
+        'controller': str(SAMSUNG_MEDIA_CONTROLLER),
+    }
+
+
+def _samsung_mode_state() -> dict:
+    state = _read_json(SAMSUNG_MEDIA_MODE)
+    applied = str(state.get('applied_mode') or state.get('mode') or 'idle').strip().lower()
+    if applied not in {'idle', 'unknown', 'youtube', 'video', 'tv'}:
+        applied = 'unknown'
+    requested = state.get('requested_mode')
+    if requested is not None:
+        requested = str(requested).strip().lower()
+        if requested not in {'youtube', 'video', 'tv'}:
+            requested = None
+    return {
+        **_samsung_mode_default(),
+        **state,
+        'requested_mode': requested,
+        'applied_mode': applied,
+        'mode': applied,
+        'controller': str(SAMSUNG_MEDIA_CONTROLLER),
+    }
+
+
+def _write_samsung_mode_state(update: dict) -> dict:
+    state = {**_samsung_mode_state(), **update, 'schema': 'skeleton.samsung.media_mode.v1', 'updated_at': int(time.time()), 'controller': str(SAMSUNG_MEDIA_CONTROLLER)}
+    state['mode'] = state.get('applied_mode') or state.get('mode') or 'unknown'
+    _atomic(SAMSUNG_MEDIA_MODE, state)
+    return state
+
+
+def _parse_controller_json(output: str) -> dict:
+    output = (output or '').strip()
+    if not output:
+        return {}
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return {'raw': output}
+    return data if isinstance(data, dict) else {'value': data}
+
+
+def _run_samsung_controller(*arguments: str, timeout: float = 15.0) -> dict:
+    process = subprocess.run(
+        [str(SAMSUNG_MEDIA_CONTROLLER), *arguments],
+        text=True, capture_output=True, timeout=timeout, check=False,
+    )
+    payload = _parse_controller_json(process.stdout)
+    if process.returncode:
+        detail = str(payload.get('error') or process.stderr or process.stdout or 'Samsung controller command failed.').strip()
+        raise RuntimeError(detail[-500:])
+    return payload
+
+
+def _controller_text_values(data: dict) -> str:
+    values: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    collect(data)
+    return '\n'.join(values)
+
+
+def _samsung_youtube_verified(status: dict) -> bool:
+    foreground = '\n'.join(
+        str(status.get(key) or '').strip()
+        for key in ('foreground_package', 'current_package', 'package', 'current_focus', 'top_activity', 'activity')
+    )
+    active = status.get('active')
+    foreground_ok = SAMSUNG_SMARTTUBE_PACKAGE in foreground
+    if isinstance(active, bool):
+        return active and foreground_ok
+    state = str(status.get('state') or status.get('status') or '').strip().lower()
+    return foreground_ok and state not in {'background', 'inactive', 'stopped', 'missing'}
+
+
+def _samsung_receiver_verified(status: dict) -> bool:
+    focus = str(status.get('current_focus') or status.get('focus') or status.get('focused_window') or '')
+    if SAMSUNG_RECEIVER_PACKAGE in focus:
+        return True
+    return SAMSUNG_RECEIVER_PACKAGE in _controller_text_values({'current_focus': focus})
+
+
+def _verify_samsung_mode(mode: str) -> tuple[bool, dict]:
+    if mode == 'youtube':
+        status = _run_samsung_controller('youtube-status')
+        return _samsung_youtube_verified(status), status
+    status = _run_samsung_controller('status')
+    return _samsung_receiver_verified(status), status
+
+
+def _clear_samsung_video_error_fields() -> None:
+    for path in (SAMSUNG_MEDIA_MODE, SAMSUNG_RECEIVER_STATUS):
+        state = _read_json(path)
+        changed = False
+        for key in ('video_error', 'video_error_detail', 'video_error_at', 'error', 'error_detail', 'error_type'):
+            if key in state:
+                state.pop(key, None)
+                changed = True
+        if changed:
+            _atomic(path, state)
+
+
+def _set_samsung_media_mode(mode: str) -> dict:
+    requested = str(mode or '').strip().lower()
+    if requested not in {'youtube', 'video', 'tv'}:
+        raise ValueError('Невідомий Samsung media mode.')
+    previous = _samsung_mode_state()
+    pending = _write_samsung_mode_state({
+        'requested_mode': requested,
+        'applied_mode': previous.get('applied_mode') or 'idle',
+        'transition': 'pending',
+        'verified': False,
+        'last_error': None,
+    })
+    try:
+        _run_samsung_controller('mode', requested)
+        verified, evidence = _verify_samsung_mode(requested)
+        if not verified:
+            raise RuntimeError(f'Samsung controller did not verify {requested}.')
+    except Exception as exc:
+        return _write_samsung_mode_state({
+            **pending,
+            'requested_mode': requested,
+            'applied_mode': previous.get('applied_mode') or 'idle',
+            'transition': 'failed',
+            'verified': False,
+            'last_error': str(exc),
+        })
+    if requested == 'youtube':
+        _clear_samsung_video_error_fields()
+    return _write_samsung_mode_state({
+        'requested_mode': requested,
+        'applied_mode': requested,
+        'transition': 'verified',
+        'verified': True,
+        'verified_at': int(time.time()),
+        'last_error': None,
+        'evidence': evidence,
+    })
+
+
+def _refresh_samsung_media_mode() -> dict:
+    state = _samsung_mode_state()
+    requested = state.get('requested_mode')
+    if requested in {'youtube', 'video', 'tv'}:
+        try:
+            verified, evidence = _verify_samsung_mode(str(requested))
+        except Exception as exc:
+            return _write_samsung_mode_state({'transition': 'deferred', 'verified': False, 'last_error': str(exc)})
+        if verified:
+            if requested == 'youtube':
+                _clear_samsung_video_error_fields()
+            return _write_samsung_mode_state({
+                'applied_mode': requested,
+                'transition': 'verified',
+                'verified': True,
+                'verified_at': int(time.time()),
+                'last_error': None,
+                'evidence': evidence,
+            })
+        return _write_samsung_mode_state({'transition': 'deferred', 'verified': False, 'last_error': f'Samsung did not verify {requested}.', 'evidence': evidence})
+    return state
+
+
+def _samsung_control_slug(action: str) -> str:
+    mapping = {
+        'ok': 'ok',
+        'enter': 'ok',
+        'playpause': 'play_pause',
+        'play_pause': 'play_pause',
+        'play-pause': 'play_pause',
+        'back': 'back',
+        'home': 'home',
+        'up': 'up',
+        'down': 'down',
+        'left': 'left',
+        'right': 'right',
+        'menu': 'menu',
+        'rewind': 'rewind',
+        'forward': 'forward',
+        'stop': 'stop',
+    }
+    slug = mapping.get(str(action or '').strip().lower())
+    if not slug:
+        raise ValueError('Ця Samsung-кнопка не підтримується.')
+    return slug
+
+
 def _receiver_media(status: dict) -> dict:
     media = status.get('media')
     return media if isinstance(media, dict) else status
@@ -1404,6 +1616,32 @@ def _incoming_has_playback_fields(data: dict) -> bool:
     return any(key in data for key in ('playing', 'position_seconds', 'position', 'duration_seconds'))
 
 
+@app.get('/api/samsung/media/status')
+def samsung_media_status_get() -> Response:
+    _require()
+    mode = _refresh_samsung_media_mode()
+    receiver = _samsung_receiver_status()
+    return jsonify({
+        'schema': 'skeleton.samsung.media_status.v1',
+        'device_id': SAMSUNG_DEVICE_ID,
+        'requested_mode': mode.get('requested_mode'),
+        'applied_mode': mode.get('applied_mode'),
+        'mode': mode.get('applied_mode'),
+        'transition': mode.get('transition'),
+        'verified': bool(mode.get('verified')),
+        'verified_at': mode.get('verified_at') or 0,
+        'updated_at': mode.get('updated_at') or int(time.time()),
+        'controller': str(SAMSUNG_MEDIA_CONTROLLER),
+        'packages': {
+            'youtube': SAMSUNG_SMARTTUBE_PACKAGE,
+            'receiver': SAMSUNG_RECEIVER_PACKAGE,
+        },
+        'receiver': receiver,
+        'last_error': mode.get('last_error'),
+        'evidence': mode.get('evidence') if isinstance(mode.get('evidence'), dict) else {},
+    })
+
+
 @app.post('/api/samsung/media/status')
 def samsung_status_post() -> Response:
     device_id = _request_device_id()
@@ -1436,6 +1674,30 @@ def samsung_status_post() -> Response:
         allowed.pop('error', None)
     _atomic(SAMSUNG_RECEIVER_STATUS, allowed)
     return jsonify({'status': 'ok', **allowed})
+
+
+@app.post('/api/samsung/media/mode/<mode>')
+def samsung_media_mode_post(mode: str) -> Response:
+    _require()
+    try:
+        state = _set_samsung_media_mode(mode)
+    except ValueError as exc:
+        return jsonify({'status': 'error', 'error': str(exc), **_samsung_mode_state()}), 400
+    status_code = 200 if state.get('transition') == 'verified' else 409
+    return jsonify({'status': 'ok' if status_code == 200 else 'deferred', **state}), status_code
+
+
+@app.post('/api/samsung/media/control/<action>')
+def samsung_media_control_post(action: str) -> Response:
+    _require()
+    try:
+        slug = _samsung_control_slug(action)
+        result = _run_samsung_controller('control', slug)
+        return jsonify({'status': 'ok', 'action': slug, 'controller': str(SAMSUNG_MEDIA_CONTROLLER), 'result': result})
+    except ValueError as exc:
+        return jsonify({'status': 'error', 'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'status': 'error', 'error': str(exc), 'controller': str(SAMSUNG_MEDIA_CONTROLLER)}), 409
 
 
 @app.post('/api/jobs/<job_id>/refresh')
