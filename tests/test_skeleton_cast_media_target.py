@@ -187,6 +187,7 @@ def _install_runtime(monkeypatch, tmp_path: Path, fake_player: FakePlayer) -> No
     monkeypatch.setattr(cast_app, "MEDIA_TARGET_STATE", state / "media-target.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_DESIRED", state / "samsung-media-desired.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_STATUS", state / "samsung-media-status.json")
+    monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_MODE", state / "samsung-media-mode.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_RECEIVER_DESIRED", state / "samsung-media-desired.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_RECEIVER_STATUS", state / "samsung-media-status.json")
     monkeypatch.setattr(cast_app, "MEDIA_TARGET_WAIT_SECONDS", 0.03)
@@ -274,7 +275,10 @@ def test_canonical_samsung_routes_and_put_media_target_are_registered() -> None:
     rules = {(rule.rule, tuple(sorted(rule.methods))) for rule in cast_app.app.url_map.iter_rules()}
 
     assert any(rule == "/api/samsung/media/desired" and "GET" in methods for rule, methods in rules)
+    assert any(rule == "/api/samsung/media/status" and "GET" in methods for rule, methods in rules)
     assert any(rule == "/api/samsung/media/status" and "POST" in methods for rule, methods in rules)
+    assert any(rule == "/api/samsung/media/mode/<mode>" and "POST" in methods for rule, methods in rules)
+    assert any(rule == "/api/samsung/media/control/<action>" and "POST" in methods for rule, methods in rules)
     assert any(rule == "/api/media/target" and "PUT" in methods for rule, methods in rules)
     assert not any(rule in {"/api/samsung/desired", "/api/samsung/status"} for rule, _methods in rules)
 
@@ -521,3 +525,201 @@ def test_wired_capability_is_not_degraded_by_wifi_policy(monkeypatch, tmp_path: 
     cast_app._switch_media_target("samsung")
 
     assert writes[0]["source_id"] == "src-720"
+
+
+def _install_controller(monkeypatch, responses: dict[tuple[str, ...], dict], calls: list[tuple[str, ...]]) -> None:
+    controller = Path("/tmp/test-skeleton-samsung-media-controller")
+    monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_CONTROLLER", controller)
+
+    def run(cmd, **_kwargs):
+        assert cmd[0] == str(controller)
+        assert "/usr/bin/adb" not in cmd
+        args = tuple(cmd[1:])
+        calls.append(args)
+        payload = responses.get(args, {})
+        return types.SimpleNamespace(returncode=int(payload.pop("_returncode", 0)) if "_returncode" in payload else 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(cast_app.subprocess, "run", run)
+    monkeypatch.setattr(cast_app, "_run_adb_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("generic adb key routing used")))
+
+
+def test_samsung_mode_youtube_is_requested_then_applied_only_after_smarttube_foreground_and_clears_stale_video_error(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"applied_mode": "video", "requested_mode": "video", "video_error": "stale"})
+    cast_app._atomic(cast_app.SAMSUNG_RECEIVER_STATUS, {"device_id": "samsung_kiosk", "revision": 3, "mode": "video", "video_error": "stale"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "youtube"): {"accepted": True},
+            ("youtube-status",): {"active": True, "foreground_package": "org.smarttube.stable"},
+        },
+        calls,
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body, code = cast_app.samsung_media_mode_post("youtube")
+
+    assert code == 200
+    assert body["requested_mode"] == "youtube"
+    assert body["applied_mode"] == "youtube"
+    assert body["transition"] == "verified"
+    assert calls == [("mode", "youtube"), ("youtube-status",)]
+    assert "video_error" not in json.loads(cast_app.SAMSUNG_MEDIA_MODE.read_text())
+    assert "video_error" not in json.loads(cast_app.SAMSUNG_RECEIVER_STATUS.read_text())
+
+
+def test_samsung_mode_video_from_youtube_requires_receiver_current_focus(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"applied_mode": "youtube", "requested_mode": "youtube", "transition": "verified"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "video"): {"accepted": True},
+            ("status",): {"current_focus": "Window{42 ua.homeedge.mediareceiver/.MainActivity}"},
+        },
+        calls,
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body, code = cast_app.samsung_media_mode_post("video")
+
+    assert code == 200
+    assert body["requested_mode"] == "video"
+    assert body["applied_mode"] == "video"
+    assert calls == [("mode", "video"), ("status",)]
+
+
+def test_samsung_mode_tv_from_youtube_requires_receiver_current_focus(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"applied_mode": "youtube", "requested_mode": "youtube", "transition": "verified"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "tv"): {"accepted": True},
+            ("status",): {"current_focus": "mCurrentFocus=Window{ua.homeedge.mediareceiver/Player}"},
+        },
+        calls,
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body, code = cast_app.samsung_media_mode_post("tv")
+
+    assert code == 200
+    assert body["requested_mode"] == "tv"
+    assert body["applied_mode"] == "tv"
+    assert calls == [("mode", "tv"), ("status",)]
+
+
+def test_samsung_mode_deferred_without_smarttube_foreground_preserves_previous_verified_mode(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"applied_mode": "video", "requested_mode": "video", "transition": "verified"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "youtube"): {"accepted": True},
+            ("youtube-status",): {"active": False, "foreground_package": "com.samsung.launcher"},
+        },
+        calls,
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body, code = cast_app.samsung_media_mode_post("youtube")
+
+    assert code == 409
+    assert body["requested_mode"] == "youtube"
+    assert body["applied_mode"] == "video"
+    assert body["mode"] == "video"
+    assert body["transition"] == "failed"
+
+
+def test_samsung_mode_failed_receiver_verification_has_no_no_evidence_fallback(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"applied_mode": "youtube", "requested_mode": "youtube", "transition": "verified"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "video"): {"accepted": True},
+            ("status",): {"app": "Samsung Media Receiver", "package": "ua.homeedge.mediareceiver"},
+        },
+        calls,
+    )
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body, code = cast_app.samsung_media_mode_post("video")
+
+    assert code == 409
+    assert body["requested_mode"] == "video"
+    assert body["applied_mode"] == "youtube"
+    assert body["transition"] == "failed"
+
+
+def test_samsung_mode_without_previous_state_preserves_explicit_idle_on_failure(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    calls: list[tuple[str, ...]] = []
+    _install_controller(
+        monkeypatch,
+        {
+            ("mode", "youtube"): {"accepted": True},
+            ("youtube-status",): {"active": False, "foreground_package": "com.samsung.launcher"},
+        },
+        calls,
+    )
+
+    state = cast_app._set_samsung_media_mode("youtube")
+
+    assert state["requested_mode"] == "youtube"
+    assert state["applied_mode"] == "idle"
+    assert state["transition"] == "failed"
+
+
+def test_samsung_status_get_refreshes_requested_mode_for_home_ui(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(cast_app.SAMSUNG_MEDIA_MODE, {"requested_mode": "youtube", "applied_mode": "idle", "transition": "pending"})
+    calls: list[tuple[str, ...]] = []
+    _install_controller(monkeypatch, {("youtube-status",): {"active": True, "foreground_package": "org.smarttube.stable"}}, calls)
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    body = cast_app.samsung_media_status_get()
+
+    assert body["requested_mode"] == "youtube"
+    assert body["applied_mode"] == "youtube"
+    assert body["packages"]["youtube"] == "org.smarttube.stable"
+    assert body["packages"]["receiver"] == "ua.homeedge.mediareceiver"
+    assert calls == [("youtube-status",)]
+
+
+def test_samsung_control_endpoint_uses_controller_slugs_not_select_or_generic_adb(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer()
+    _install_runtime(monkeypatch, tmp_path, fake)
+    calls: list[tuple[str, ...]] = []
+    _install_controller(monkeypatch, {("control", "play_pause"): {"sent": True}, ("control", "ok"): {"sent": True}}, calls)
+    monkeypatch.setattr(cast_app, "jsonify", lambda *args, **kwargs: args[0] if args else kwargs)
+
+    play = cast_app.samsung_media_control_post("playpause")
+    ok = cast_app.samsung_media_control_post("ok")
+
+    assert play["action"] == "play_pause"
+    assert ok["action"] == "ok"
+    assert ("control", "select") not in calls
+    assert calls == [("control", "play_pause"), ("control", "ok")]
+
+
+def test_samsung_package_identities_are_strict_for_controller_verification() -> None:
+    assert cast_app.SAMSUNG_SMARTTUBE_PACKAGE == "org.smarttube.stable"
+    assert cast_app.SAMSUNG_RECEIVER_PACKAGE == "ua.homeedge.mediareceiver"
+    assert cast_app._samsung_youtube_verified({"active": True, "foreground_package": "org.smarttube.beta"}) is False
+    assert cast_app._samsung_youtube_verified({"active": True, "foreground_package": "org.smarttube.stable"}) is True
+    assert cast_app._samsung_receiver_verified({"current_focus": "Window{ua.homeedge.mediareceiver/.MainActivity}"}) is True
+    assert cast_app._samsung_receiver_verified({"package": "ua.homeedge.mediareceiver", "app": "Samsung Media Receiver"}) is False
