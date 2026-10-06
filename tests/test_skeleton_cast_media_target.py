@@ -185,6 +185,7 @@ def _install_runtime(monkeypatch, tmp_path: Path, fake_player: FakePlayer) -> No
     monkeypatch.setattr(cast_app, "STATE", state)
     monkeypatch.setattr(cast_app, "JOBS", jobs)
     monkeypatch.setattr(cast_app, "MEDIA_TARGET_STATE", state / "media-target.json")
+    monkeypatch.setattr(cast_app, "MEDIA_HANDOFF_STATE", state / "media-handoff.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_DESIRED", state / "samsung-media-desired.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_MEDIA_STATUS", state / "samsung-media-status.json")
     monkeypatch.setattr(cast_app, "SAMSUNG_RECEIVER_DESIRED", state / "samsung-media-desired.json")
@@ -276,6 +277,7 @@ def test_canonical_samsung_routes_and_put_media_target_are_registered() -> None:
     assert any(rule == "/api/samsung/media/desired" and "GET" in methods for rule, methods in rules)
     assert any(rule == "/api/samsung/media/status" and "POST" in methods for rule, methods in rules)
     assert any(rule == "/api/media/target" and "PUT" in methods for rule, methods in rules)
+    assert any(rule == "/api/media/handoff" and "POST" in methods for rule, methods in rules)
     assert not any(rule in {"/api/samsung/desired", "/api/samsung/status"} for rule, _methods in rules)
 
 
@@ -334,7 +336,9 @@ def test_playing_tv_to_samsung_sends_flat_720p_same_voice_and_then_pauses_tv(mon
     _install_runtime(monkeypatch, tmp_path, fake)
     writes = _auto_observe(monkeypatch)
 
-    result = cast_app._switch_media_target("samsung")
+    charged = cast_app._media_handoff_press("tv", owner_device_id="controller")
+    cast_app._switch_media_target("samsung")
+    result = cast_app._media_handoff_press("samsung", owner_device_id="controller")
 
     desired = writes[0]
     assert result["target"] == "samsung"
@@ -347,6 +351,7 @@ def test_playing_tv_to_samsung_sends_flat_720p_same_voice_and_then_pauses_tv(mon
     assert desired["quality"] == "720p"
     assert desired["translation"] == "Ukrainian"
     assert desired["episode"] == "5"
+    assert charged["capture"]["position_seconds"] == 123.0
     assert fake.calls == [("control", "pause")]
 
 
@@ -355,7 +360,9 @@ def test_paused_tv_to_samsung_loads_then_same_revision_pause_before_target_mutat
     _install_runtime(monkeypatch, tmp_path, fake)
     writes = _auto_observe(monkeypatch)
 
-    result = cast_app._switch_media_target("samsung")
+    cast_app._media_handoff_press("tv", owner_device_id="controller")
+    cast_app._switch_media_target("samsung")
+    result = cast_app._media_handoff_press("samsung", owner_device_id="controller")
 
     assert result["target"] == "samsung"
     assert [item["action"] for item in writes] == ["play", "pause"]
@@ -403,7 +410,9 @@ def test_playing_samsung_to_tv_transfers_state_then_pauses_samsung_same_revision
     cast_app._atomic(cast_app.SAMSUNG_RECEIVER_STATUS, {"device_id": "samsung_kiosk", "revision": 5, "mode": "video", "position_seconds": 321.0, "playing": True, "app": "receiver"})
     actions = _auto_observe(monkeypatch)
 
-    result = cast_app._switch_media_target("tv")
+    cast_app._media_handoff_press("samsung", owner_device_id="controller")
+    cast_app._switch_media_target("tv")
+    result = cast_app._media_handoff_press("tv", owner_device_id="controller")
 
     assert result["target"] == "tv"
     assert fake.calls == [("play", "src-720"), ("seek", 321.0), ("control", "play")]
@@ -420,7 +429,9 @@ def test_paused_samsung_to_tv_keeps_destination_paused_without_pausing_samsung_a
     cast_app._atomic(cast_app.SAMSUNG_RECEIVER_STATUS, {"device_id": "samsung_kiosk", "revision": 5, "mode": "video", "position_seconds": 44.0, "playing": False, "app": "receiver"})
     actions = _auto_observe(monkeypatch)
 
-    result = cast_app._switch_media_target("tv")
+    cast_app._media_handoff_press("samsung", owner_device_id="controller")
+    cast_app._switch_media_target("tv")
+    result = cast_app._media_handoff_press("tv", owner_device_id="controller")
 
     assert result["target"] == "tv"
     assert fake.calls == [("play", "src-720"), ("seek", 44.0), ("control", "pause")]
@@ -472,29 +483,32 @@ def test_destination_failure_leaves_previous_session_recoverable_and_target_trut
     _install_runtime(monkeypatch, tmp_path, fake)
 
     try:
+        cast_app._media_handoff_press("tv", owner_device_id="controller")
         cast_app._switch_media_target("samsung")
+        cast_app._media_handoff_press("samsung", owner_device_id="controller")
     except RuntimeError:
         pass
     else:
         raise AssertionError("handoff should fail without receiver heartbeat")
 
-    assert cast_app._media_target_state()["target"] == "tv"
+    assert cast_app._media_target_state()["target"] == "samsung"
     assert fake.status()["source_id"] == "src-1080"
     assert fake.status()["pause"] is True
+    assert cast_app._media_handoff_state()["charged"] is True
 
 
 def test_duplicate_target_selection_is_idempotent_and_does_not_rewrite_receiver_revision(monkeypatch, tmp_path: Path) -> None:
     fake = FakePlayer(paused=False)
     _install_runtime(monkeypatch, tmp_path, fake)
-    writes = _auto_observe(monkeypatch)
+    _auto_observe(monkeypatch)
 
     first = cast_app._switch_media_target("samsung")
     second = cast_app._switch_media_target("samsung")
 
     assert first["target"] == "samsung"
     assert second["unchanged"] is True
-    assert len(writes) == 1
-    assert json.loads(cast_app.SAMSUNG_RECEIVER_DESIRED.read_text())["revision"] == writes[0]["revision"]
+    assert not cast_app.SAMSUNG_RECEIVER_DESIRED.exists()
+    assert fake.calls == []
 
 
 def test_no_youtube_hop_for_non_youtube_media_and_no_volume_reset(monkeypatch, tmp_path: Path) -> None:
@@ -504,12 +518,14 @@ def test_no_youtube_hop_for_non_youtube_media_and_no_volume_reset(monkeypatch, t
     monkeypatch.setattr(cast_app, "_set_volume", lambda level: (_ for _ in ()).throw(AssertionError("volume changed")))
 
     try:
+        cast_app._media_handoff_press("tv", owner_device_id="controller")
         cast_app._switch_media_target("samsung")
+        cast_app._media_handoff_press("samsung", owner_device_id="controller")
     except RuntimeError as exc:
         assert "сумісного потоку" in str(exc)
     else:
         raise AssertionError("non-YouTube media must not use a YouTube intermediary")
-    assert cast_app._media_target_state()["target"] == "tv"
+    assert cast_app._media_target_state()["target"] == "samsung"
 
 
 def test_wired_capability_is_not_degraded_by_wifi_policy(monkeypatch, tmp_path: Path) -> None:
@@ -518,6 +534,8 @@ def test_wired_capability_is_not_degraded_by_wifi_policy(monkeypatch, tmp_path: 
     cast_app._atomic(cast_app.STATE / "samsung-tablet-capabilities.json", {"connection": "wired", "wifi_max_height": 480})
     writes = _auto_observe(monkeypatch)
 
+    cast_app._media_handoff_press("tv", owner_device_id="controller")
     cast_app._switch_media_target("samsung")
+    cast_app._media_handoff_press("samsung", owner_device_id="controller")
 
     assert writes[0]["source_id"] == "src-720"

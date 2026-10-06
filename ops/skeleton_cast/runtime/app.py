@@ -70,6 +70,7 @@ _REMOTE_STATUS_CACHE: dict[str, object] = {'at': 0.0, 'mode': None, 'data': None
 _MEDIA_SEARCH_BREAKER = media_search.CircuitBreaker()
 _MEDIA_RELEASE_TRACKING = media_search.ReleaseTrackingStore()
 MEDIA_TARGET_STATE = STATE / 'media-target.json'
+MEDIA_HANDOFF_STATE = STATE / 'media-handoff.json'
 SAMSUNG_MEDIA_DESIRED = STATE / 'samsung-media-desired.json'
 SAMSUNG_MEDIA_STATUS = STATE / 'samsung-media-status.json'
 SAMSUNG_RECEIVER_DESIRED = SAMSUNG_MEDIA_DESIRED
@@ -78,6 +79,7 @@ SAMSUNG_DEVICE_ID = 'samsung_kiosk'
 TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
 MEDIA_TARGET_POSITION_TOLERANCE_SECONDS = 12.0
 MEDIA_TARGET_WAIT_SECONDS = 8.0
+MEDIA_HANDOFF_RETRY_WINDOW_SECONDS = 30.0
 
 
 def _atomic(path: Path, value: dict) -> None:
@@ -1035,6 +1037,46 @@ def _set_media_target(target: str, *, reason: str, observed: dict | None = None)
     return state
 
 
+def _media_handoff_state() -> dict:
+    state = _read_json(MEDIA_HANDOFF_STATE)
+    if state.get('schema') != 'skeleton.media.handoff_memory.v1':
+        return {
+            'schema': 'skeleton.media.handoff_memory.v1',
+            'charged': False,
+            'updated_at': int(time.time()),
+        }
+    return {'schema': 'skeleton.media.handoff_memory.v1', 'charged': False, **state}
+
+
+def _write_media_handoff_state(state: dict) -> dict:
+    state = {
+        'schema': 'skeleton.media.handoff_memory.v1',
+        'updated_at': int(time.time()),
+        **state,
+    }
+    _atomic(MEDIA_HANDOFF_STATE, state)
+    return state
+
+
+def _clear_media_handoff(*, owner_device_id: str | None = None, reason: str = 'explicit_clear') -> dict:
+    state = _media_handoff_state()
+    if state.get('charged') and owner_device_id and state.get('owner_device_id') != owner_device_id:
+        raise RuntimeError('Pending media capture belongs to another controller.')
+    return _write_media_handoff_state({'charged': False, 'reason': reason})
+
+
+def _recent_completed_handoff(state: dict, *, selected: str, owner_device_id: str) -> bool:
+    if state.get('charged') or state.get('reason') != 'discharged':
+        return False
+    if state.get('owner_device_id') != owner_device_id or state.get('destination_endpoint') != selected:
+        return False
+    try:
+        age = time.time() - float(state.get('updated_at') or 0)
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= age <= MEDIA_HANDOFF_RETRY_WINDOW_SECONDS
+
+
 def _find_job_source(job_id: object, source_id: object) -> tuple[dict, dict]:
     job = _load(str(job_id or ''))
     source = next((item for item in job.get('sources', []) if str(item.get('source_id') or '') == str(source_id or '')), None)
@@ -1180,6 +1222,14 @@ def _write_samsung_desired(job: dict, source: dict, *, position: float) -> dict:
     return desired
 
 
+def _write_samsung_desired_from_capture(capture: dict, source: dict) -> dict:
+    job = {'job_id': capture.get('job_id'), 'title': capture.get('title'), 'poster': capture.get('poster')}
+    desired = _write_samsung_desired(job, source, position=float(capture.get('position_seconds') or 0.0))
+    desired['handoff'] = _handoff_provenance(capture, 'samsung')
+    _atomic(SAMSUNG_RECEIVER_DESIRED, desired)
+    return desired
+
+
 def _write_samsung_action(action: str) -> dict:
     desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
     if not desired:
@@ -1272,6 +1322,166 @@ def _samsung_session_snapshot() -> tuple[dict, dict, dict]:
     return status, job, source
 
 
+def _session_snapshot_for_endpoint(endpoint: str) -> tuple[dict, dict, dict]:
+    if endpoint == 'tv':
+        return _tv_session_snapshot()
+    if endpoint == 'samsung':
+        return _samsung_session_snapshot()
+    raise RuntimeError(f'{TARGET_LABELS.get(endpoint, endpoint)} does not expose a recoverable media session.')
+
+
+def _capture_source_endpoint(endpoint: str, *, owner_device_id: str) -> dict:
+    status, job, source = _session_snapshot_for_endpoint(endpoint)
+    capture = {
+        'charged': True,
+        'capture_id': uuid.uuid4().hex,
+        'owner_device_id': owner_device_id,
+        'source_endpoint': endpoint,
+        'source_target_revision': _media_target_state().get('revision'),
+        'job_id': job.get('job_id'),
+        'source_id': source.get('source_id'),
+        'position_seconds': round(_playback_position(_receiver_media(status)), 3),
+        'paused': _playback_paused(_receiver_media(status)),
+        'playing': _playback_playing(_receiver_media(status)),
+        'captured_at': int(time.time()),
+        'title': job.get('title') or source.get('title') or source.get('page_title'),
+        'poster': job.get('poster') or source.get('poster'),
+        'source': {
+            key: source.get(key)
+            for key in (
+                'source_id', 'url', 'kind', 'quality', 'height', 'translation', 'group',
+                'season', 'episode', 'video_codec', 'audio_codec', 'channel_id',
+                'channel_number', 'picon',
+            )
+            if key in source
+        },
+        'provenance': {
+            'kind': 'explicit_capture_memory',
+            'source_endpoint': endpoint,
+            'source_observed': {
+                'playing': _playback_playing(_receiver_media(status)),
+                'paused': _playback_paused(_receiver_media(status)),
+                'position_seconds': round(_playback_position(_receiver_media(status)), 3),
+            },
+        },
+    }
+    return _write_media_handoff_state(capture)
+
+
+def _handoff_provenance(capture: dict, destination: str) -> dict:
+    return {
+        'kind': 'explicit_capture_memory',
+        'capture_id': capture.get('capture_id'),
+        'owner_device_id': capture.get('owner_device_id'),
+        'source_endpoint': capture.get('source_endpoint'),
+        'destination_endpoint': destination,
+        'captured_at': capture.get('captured_at'),
+        'position_seconds': capture.get('position_seconds'),
+        'job_id': capture.get('job_id'),
+        'source_id': capture.get('source_id'),
+    }
+
+
+def _adapt_source_for_destination(destination: str, job: dict, source: dict) -> dict:
+    if destination == 'samsung':
+        return _adapt_source_for_samsung(job, source)
+    if destination == 'tv':
+        return source
+    raise RuntimeError(f'{TARGET_LABELS.get(destination, destination)} does not support media handoff.')
+
+
+def _start_destination_from_capture(destination: str, capture: dict) -> tuple[dict, dict]:
+    job, source = _find_job_source(capture.get('job_id'), capture.get('source_id'))
+    adapted_source = _adapt_source_for_destination(destination, job, source)
+    position = float(capture.get('position_seconds') or 0.0)
+    paused = bool(capture.get('paused'))
+    if destination == 'samsung':
+        desired = _write_samsung_desired_from_capture(capture, adapted_source)
+        observed = _wait_for_samsung_postcondition(desired)
+        if paused:
+            desired = _write_samsung_action('pause')
+            desired['handoff'] = _handoff_provenance(capture, destination)
+            _atomic(SAMSUNG_RECEIVER_DESIRED, desired)
+            observed = _wait_for_samsung_postcondition(desired)
+        return observed, {'desired': desired, 'adapted_source': adapted_source}
+    if destination == 'tv':
+        player.play(job, adapted_source, 'off')
+        player.seek_absolute(position)
+        player.control('pause' if paused else 'play')
+        observed = _wait_for_tv_postcondition(source_id=adapted_source.get('source_id'), position=position, paused=paused)
+        return observed, {'adapted_source': adapted_source}
+    raise RuntimeError(f'{TARGET_LABELS.get(destination, destination)} does not support media handoff.')
+
+
+def _pause_source_after_verified_discharge(capture: dict) -> None:
+    if not capture.get('playing'):
+        return
+    source = str(capture.get('source_endpoint') or '')
+    if source == 'tv':
+        player.control('pause')
+        return
+    if source == 'samsung':
+        desired = _write_samsung_action('pause')
+        try:
+            _wait_for_samsung_postcondition(desired)
+        except RuntimeError:
+            pass
+
+
+def _discharge_media_handoff(destination: str, *, owner_device_id: str) -> dict:
+    destination = str(destination or '').strip().lower()
+    if destination not in TARGET_LABELS:
+        raise ValueError('Невідомий медіа-екран.')
+    capture = _media_handoff_state()
+    if not capture.get('charged'):
+        raise RuntimeError('Немає активного захоплення медіа для передачі.')
+    if capture.get('owner_device_id') != owner_device_id:
+        raise RuntimeError('Pending media capture belongs to another controller.')
+    if capture.get('source_endpoint') == destination:
+        return {'charged': True, 'unchanged': True, 'capture': capture}
+
+    observed, detail = _start_destination_from_capture(destination, capture)
+    _pause_source_after_verified_discharge(capture)
+    target_state = _set_media_target(destination, reason='handoff_verified', observed=observed)
+    completed = _write_media_handoff_state({
+        'charged': False,
+        'reason': 'discharged',
+        'capture_id': capture.get('capture_id'),
+        'owner_device_id': owner_device_id,
+        'source_endpoint': capture.get('source_endpoint'),
+        'destination_endpoint': destination,
+        'position_seconds': capture.get('position_seconds'),
+        'job_id': capture.get('job_id'),
+        'source_id': capture.get('source_id'),
+    })
+    return {
+        **target_state,
+        'unchanged': False,
+        'charged': False,
+        'capture': completed,
+        'handoff': _handoff_provenance(capture, destination),
+        **detail,
+    }
+
+
+def _media_handoff_press(target: str | None = None, *, owner_device_id: str | None = None) -> dict:
+    owner = owner_device_id or _request_device_id()
+    selected = str(target or _media_target_state().get('target') or '').strip().lower()
+    if selected not in TARGET_LABELS:
+        raise ValueError('Невідомий медіа-екран.')
+    capture = _media_handoff_state()
+    if not capture.get('charged'):
+        if _recent_completed_handoff(capture, selected=selected, owner_device_id=owner):
+            return {'status': 'discharged', 'charged': False, 'unchanged': True, 'capture': capture}
+        charged = _capture_source_endpoint(selected, owner_device_id=owner)
+        return {'status': 'charged', 'charged': True, 'capture': charged}
+    if capture.get('owner_device_id') != owner:
+        raise RuntimeError('Pending media capture belongs to another controller.')
+    if capture.get('source_endpoint') == selected:
+        return {'status': 'charged', 'charged': True, 'unchanged': True, 'capture': capture}
+    return {'status': 'discharged', **_discharge_media_handoff(selected, owner_device_id=owner)}
+
+
 def _switch_media_target(target: str) -> dict:
     target = str(target or '').strip().lower()
     if target not in TARGET_LABELS:
@@ -1279,37 +1489,7 @@ def _switch_media_target(target: str) -> dict:
     current = _media_target_state()
     if current.get('target') == target:
         return {**current, 'unchanged': True}
-
-    if target == 'samsung':
-        source_status, job, current_source = _tv_session_snapshot()
-        position = _playback_position(source_status)
-        paused = _playback_paused(source_status)
-        samsung_source = _adapt_source_for_samsung(job, current_source)
-        desired = _write_samsung_desired(job, samsung_source, position=position)
-        observed = _wait_for_samsung_postcondition(desired)
-        if paused:
-            desired = _write_samsung_action('pause')
-            observed = _wait_for_samsung_postcondition(desired)
-        else:
-            player.control('pause')
-        return {**_set_media_target('samsung', reason='handoff_verified', observed=observed), 'unchanged': False, 'desired': desired}
-
-    source_status, job, source = _samsung_session_snapshot()
-    media = _receiver_media(source_status)
-    position = _playback_position(media)
-    paused = _playback_paused(media)
-    was_playing = _playback_playing(media)
-    player.play(job, source, 'off')
-    player.seek_absolute(position)
-    player.control('pause' if paused else 'play')
-    observed = _wait_for_tv_postcondition(source_id=source.get('source_id'), position=position, paused=paused)
-    if was_playing:
-        pause_desired = _write_samsung_action('pause')
-        try:
-            _wait_for_samsung_postcondition(pause_desired)
-        except RuntimeError:
-            pass
-    return {**_set_media_target('tv', reason='handoff_verified', observed=observed), 'unchanged': False}
+    return {**_set_media_target(target, reason='selected'), 'unchanged': False}
 
 
 @app.post('/api/media/search')
@@ -1374,6 +1554,7 @@ def media_target_get() -> Response:
             'revision': receiver.get('revision'),
             'observable': bool(receiver),
         },
+        'handoff': _media_handoff_state(),
     })
 
 
@@ -1383,11 +1564,32 @@ def media_target_set() -> Response:
     _require()
     data = request.get_json(silent=True) or {}
     try:
+        if data.get('capture') or str(data.get('action') or '').strip().lower() in {'capture', 'handoff'}:
+            target = str(data.get('target') or _media_target_state().get('target') or '')
+            return jsonify({'status': 'ok', **_media_handoff_press(target, owner_device_id=_request_device_id())})
+        if str(data.get('action') or '').strip().lower() == 'clear':
+            return jsonify({'status': 'ok', 'handoff': _clear_media_handoff(owner_device_id=_request_device_id())})
         return jsonify({'status': 'ok', **_switch_media_target(str(data.get('target') or ''))})
     except ValueError as exc:
         return jsonify({'error': str(exc), **_media_target_state()}), 400
     except Exception as exc:
         return jsonify({'error': str(exc), **_media_target_state()}), 409
+
+
+@app.post('/api/media/handoff')
+def media_handoff_press() -> Response:
+    _require()
+    data = request.get_json(silent=True) or {}
+    try:
+        action = str(data.get('action') or 'press').strip().lower()
+        if action == 'clear':
+            return jsonify({'status': 'ok', 'handoff': _clear_media_handoff(owner_device_id=_request_device_id())})
+        target = str(data.get('target') or _media_target_state().get('target') or '')
+        return jsonify({'status': 'ok', **_media_handoff_press(target, owner_device_id=_request_device_id())})
+    except ValueError as exc:
+        return jsonify({'error': str(exc), **_media_target_state(), 'handoff': _media_handoff_state()}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc), **_media_target_state(), 'handoff': _media_handoff_state()}), 409
 
 
 @app.get('/api/samsung/media/desired')
