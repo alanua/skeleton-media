@@ -74,6 +74,12 @@ SAMSUNG_MEDIA_DESIRED = STATE / 'samsung-media-desired.json'
 SAMSUNG_MEDIA_STATUS = STATE / 'samsung-media-status.json'
 SAMSUNG_RECEIVER_DESIRED = SAMSUNG_MEDIA_DESIRED
 SAMSUNG_RECEIVER_STATUS = SAMSUNG_MEDIA_STATUS
+WATCH_HISTORY_LEGACY = STATE / 'watch-history.json'
+WATCH_HISTORY_ENDPOINTS = STATE / 'watch-history-endpoints.json'
+WATCH_HISTORY_LEGACY_SCHEMA = 'skeleton.media.watch_history.v2'
+WATCH_HISTORY_ENDPOINT_SCHEMA = 'skeleton.media.endpoint_watch_history.v1'
+_ENDPOINT_HISTORY_LOCK = getattr(player, 'ENDPOINT_HISTORY_LOCK', threading.RLock())
+HOME_EDGE_TV_HISTORY_ID = 'home_edge_tv'
 SAMSUNG_DEVICE_ID = 'samsung_kiosk'
 TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
 MEDIA_TARGET_POSITION_TOLERANCE_SECONDS = 12.0
@@ -111,6 +117,284 @@ def _read_json(path: Path) -> dict:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _stable_history_id(value: object) -> str:
+    history_id = str(value or '').strip().lower()
+    history_id = re.sub(r'[^a-z0-9_:-]+', '_', history_id).strip('_')
+    if not history_id:
+        raise ValueError('Невідомий медіа-екран.')
+    return history_id
+
+
+def _history_items_from_payload(data: dict) -> list[dict]:
+    for key in ('items', 'history', 'entries'):
+        value = data.get(key)
+        if isinstance(value, dict):
+            items = []
+            for item_key, raw in value.items():
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                item.setdefault('content_key', str(item_key))
+                item.setdefault('history_key', str(item_key))
+                if not item.get('job_id') and item.get('last_job_id'):
+                    item['job_id'] = item.get('last_job_id')
+                if not item.get('source_id') and item.get('last_source_id'):
+                    item['source_id'] = item.get('last_source_id')
+                if not item.get('title') and item.get('display_title'):
+                    item['title'] = item.get('display_title')
+                items.append(item)
+            return items
+        if isinstance(value, list):
+            items = []
+            for raw in value:
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                if not item.get('job_id') and item.get('last_job_id'):
+                    item['job_id'] = item.get('last_job_id')
+                if not item.get('source_id') and item.get('last_source_id'):
+                    item['source_id'] = item.get('last_source_id')
+                if not item.get('title') and item.get('display_title'):
+                    item['title'] = item.get('display_title')
+                items.append(item)
+            return items
+    return []
+
+
+def _legacy_samsung_owned(item: dict) -> bool:
+    return str(item.get('last_reason') or item.get('reason') or '').strip().lower() == 'samsung_periodic'
+
+
+def _history_source_counts(legacy_items: list[dict]) -> dict:
+    return {
+        'legacy_total': len(legacy_items),
+        HOME_EDGE_TV_HISTORY_ID: len(legacy_items),
+        SAMSUNG_DEVICE_ID: sum(1 for item in legacy_items if _legacy_samsung_owned(item)),
+    }
+
+
+def _history_default(legacy_items: list[dict] | None = None) -> dict:
+    legacy_items = list(legacy_items or [])
+    return {
+        'schema': WATCH_HISTORY_ENDPOINT_SCHEMA,
+        'version': 1,
+        'updated_at': int(time.time()),
+        'histories': {
+            HOME_EDGE_TV_HISTORY_ID: {'items': [dict(item) for item in legacy_items]},
+            SAMSUNG_DEVICE_ID: {'items': [dict(item) for item in legacy_items if _legacy_samsung_owned(item)]},
+        },
+        'migration': {
+            'schema': WATCH_HISTORY_LEGACY_SCHEMA,
+            'version': 1,
+            'source': str(WATCH_HISTORY_LEGACY),
+            'source_counts': _history_source_counts(legacy_items),
+        },
+    }
+
+
+def _load_endpoint_history_store() -> dict:
+    loader = getattr(player, '_load_endpoint_watch_history', None)
+    if callable(loader):
+        return loader()
+    store = _read_json(WATCH_HISTORY_ENDPOINTS)
+    if store.get('schema') == WATCH_HISTORY_ENDPOINT_SCHEMA and isinstance(store.get('histories'), dict):
+        return store
+    legacy = _read_json(WATCH_HISTORY_LEGACY)
+    legacy_items = _history_items_from_payload(legacy) if legacy.get('schema') == WATCH_HISTORY_LEGACY_SCHEMA else []
+    store = _history_default(legacy_items)
+    _atomic(WATCH_HISTORY_ENDPOINTS, store)
+    return store
+
+
+def _save_endpoint_history_store(store: dict) -> dict:
+    saver = getattr(player, '_write_endpoint_watch_history', None)
+    if callable(saver):
+        saver(store)
+        return store
+    store['schema'] = WATCH_HISTORY_ENDPOINT_SCHEMA
+    store['version'] = int(store.get('version') or 1)
+    store['updated_at'] = int(time.time())
+    histories = store.get('histories')
+    if not isinstance(histories, dict):
+        store['histories'] = {}
+    _atomic(WATCH_HISTORY_ENDPOINTS, store)
+    return store
+
+
+def _history_id_aliases() -> dict[str, str]:
+    aliases = {
+        'tv': HOME_EDGE_TV_HISTORY_ID,
+        HOME_EDGE_TV_HISTORY_ID: HOME_EDGE_TV_HISTORY_ID,
+        'samsung': SAMSUNG_DEVICE_ID,
+        SAMSUNG_DEVICE_ID: SAMSUNG_DEVICE_ID,
+    }
+    for endpoint_id, adapter in _endpoint_adapters().items():
+        if 'history' not in adapter.capabilities:
+            continue
+        history_id = adapter.history_namespace()
+        aliases[_stable_history_id(endpoint_id)] = history_id
+        if adapter.device_id:
+            aliases[_stable_history_id(adapter.device_id)] = history_id
+        aliases[_stable_history_id(history_id)] = history_id
+    return aliases
+
+
+def _resolve_history_id(endpoint: object = None) -> str:
+    requested = _stable_history_id(endpoint or HOME_EDGE_TV_HISTORY_ID)
+    return _history_id_aliases().get(requested, requested)
+
+
+def _history_bucket(store: dict, endpoint: object = None) -> dict:
+    history_id = _resolve_history_id(endpoint)
+    histories = store.setdefault('histories', {})
+    bucket = histories.setdefault(history_id, {'items': []})
+    if not isinstance(bucket, dict):
+        bucket = {'items': []}
+        histories[history_id] = bucket
+    if not isinstance(bucket.get('items'), list):
+        bucket['items'] = []
+    return bucket
+
+
+def _history_item_key(item: dict) -> str:
+    for key in ('history_key', 'media_key', 'key', 'id'):
+        value = str(item.get(key) or '').strip()
+        if value:
+            return value
+    identity = {
+        key: item.get(key)
+        for key in (
+            'job_id', 'source_id', 'media_id', 'page_url', 'url', 'title', 'media_title',
+            'original_title', 'season', 'episode', 'translation', 'group',
+        )
+        if item.get(key) not in (None, '')
+    }
+    raw = json.dumps(identity or item, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
+
+
+def _history_public_items(endpoint: object = None) -> dict:
+    store = _load_endpoint_history_store()
+    history_id = _resolve_history_id(endpoint)
+    bucket = _history_bucket(store, history_id)
+    return {
+        'schema': WATCH_HISTORY_ENDPOINT_SCHEMA,
+        'history_id': history_id,
+        'items': [dict(item, history_key=_history_item_key(item)) for item in bucket.get('items', []) if isinstance(item, dict)],
+        'migration': store.get('migration') if isinstance(store.get('migration'), dict) else {},
+    }
+
+
+def _history_find(endpoint: object, history_key: object) -> dict | None:
+    target_key = str(history_key or '').strip()
+    if not target_key:
+        return None
+    for item in _history_public_items(endpoint).get('items', []):
+        if _history_item_key(item) == target_key:
+            return item
+    return None
+
+
+def _history_delete(endpoint: object, history_key: object) -> dict:
+    with _ENDPOINT_HISTORY_LOCK:
+        store = _load_endpoint_history_store()
+        history_id = _resolve_history_id(endpoint)
+        bucket = _history_bucket(store, history_id)
+        target_key = str(history_key or '').strip()
+        before = len(bucket['items'])
+        bucket['items'] = [item for item in bucket['items'] if not isinstance(item, dict) or _history_item_key(item) != target_key]
+        _save_endpoint_history_store(store)
+        return {'history_id': history_id, 'deleted': before - len(bucket['items'])}
+
+def _progress_history_key(job_id: object, source_id: object, media: dict | None = None) -> str:
+    media = media if isinstance(media, dict) else {}
+    identity = {
+        'job_id': str(job_id or media.get('job_id') or ''),
+        'source_id': str(source_id or media.get('source_id') or ''),
+        'season': str(media.get('season') or ''),
+        'episode': str(media.get('episode') or ''),
+        'translation': str(media.get('translation') or media.get('group') or ''),
+    }
+    raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
+
+
+def _record_history_progress(endpoint: object, media: dict, *, job: dict | None = None, source: dict | None = None, reason: str = 'progress') -> dict:
+    with _ENDPOINT_HISTORY_LOCK:
+        history_id = _resolve_history_id(endpoint)
+        store = _load_endpoint_history_store()
+        bucket = _history_bucket(store, history_id)
+        job = job if isinstance(job, dict) else {}
+        source = source if isinstance(source, dict) else {}
+        job_id = media.get('job_id') or job.get('job_id')
+        source_id = media.get('source_id') or source.get('source_id')
+        key = _progress_history_key(job_id, source_id, {**source, **media})
+        existing = next((item for item in bucket['items'] if isinstance(item, dict) and _history_item_key(item) == key), None)
+        item = dict(existing or {})
+        now = int(time.time())
+        item.update({
+            'schema': 'skeleton.media.watch_item.v1',
+            'history_key': key,
+            'job_id': job_id,
+            'source_id': source_id,
+            'title': job.get('title') or media.get('title') or media.get('display_title') or item.get('title'),
+            'position_seconds': round(_playback_position(media), 3),
+            'last_reason': reason,
+            'updated_at': now,
+        })
+        if 'duration_seconds' in media:
+            item['duration_seconds'] = float(media.get('duration_seconds') or 0.0)
+        if 'playing' in media:
+            item['playing'] = bool(media.get('playing'))
+        for source_key in ('season', 'episode', 'translation', 'group', 'quality'):
+            if source.get(source_key) not in (None, ''):
+                item[source_key] = source.get(source_key)
+        if existing is None:
+            item.setdefault('created_at', now)
+            bucket['items'].insert(0, item)
+        else:
+            existing.clear()
+            existing.update(item)
+        _save_endpoint_history_store(store)
+        return {'history_id': history_id, 'item': dict(item)}
+
+def _record_tv_history_from_status(status: dict | None = None, *, reason: str = 'tv_progress') -> dict:
+    saver = getattr(player, 'save_current_progress', None)
+    if callable(saver):
+        saved = saver(reason)
+        if isinstance(saved, dict):
+            return {'history_id': HOME_EDGE_TV_HISTORY_ID, 'item': saved}
+    status = status if isinstance(status, dict) else player.status()
+    if not status.get('job_id') or not status.get('source_id'):
+        return {'history_id': HOME_EDGE_TV_HISTORY_ID, 'skipped': True}
+    try:
+        job, source = _find_job_source(status.get('job_id'), status.get('source_id'))
+    except Exception:
+        job, source = {}, {}
+    return _record_history_progress(HOME_EDGE_TV_HISTORY_ID, status, job=job, source=source, reason=reason)
+
+
+def _history_resume(endpoint: object, history_key: object) -> dict:
+    history_id = _resolve_history_id(endpoint)
+    item = _history_find(history_id, history_key)
+    if not item:
+        raise ValueError('Запис історії не знайдено.')
+    job, source = _find_job_source(item.get('job_id'), item.get('source_id'))
+    position = float(item.get('position_seconds') or 0.0)
+    adapter = next(
+        (
+            candidate for candidate in _endpoint_adapters().values()
+            if 'history' in candidate.capabilities and candidate.history_namespace() == history_id
+        ),
+        None,
+    )
+    if adapter is None:
+        raise ValueError('Медіа-екран не підтримує відновлення історії.')
+    result = adapter.resume_from_history(item, job, source, position)
+    payload = result if isinstance(result, dict) else {'result': result}
+    return {'history_id': history_id, 'item': item, 'endpoint_id': adapter.endpoint_id, **payload}
 
 
 HOME_EDGE_DEVICE_ID = 'home_edge_01'
@@ -1298,13 +1582,28 @@ class MediaEndpointAdapter:
     label = ''
     backend = ''
     family = ''
+    history_id = ''
     capabilities: tuple[str, ...] = ()
+
+    def history_namespace(self) -> str:
+        return _stable_history_id(self.history_id or self.endpoint_id or self.device_id)
+
+    def resume_from_history(self, item: dict, job: dict, source: dict, position: float) -> dict:
+        capture = {
+            'job_id': job.get('job_id'),
+            'source_id': source.get('source_id'),
+            'position_seconds': max(0.0, float(position)),
+            'paused': False,
+            'was_playing': False,
+        }
+        return self.start_from_capture(capture)
 
     def descriptor(self) -> dict:
         return {
             'target': self.endpoint_id,
             'endpoint_id': self.endpoint_id,
             'device_id': self.device_id,
+            'history_id': self.history_namespace(),
             'label': self.label,
             'backend': self.backend,
             'family': self.family,
@@ -1333,10 +1632,11 @@ class MediaEndpointAdapter:
 class TvEndpointAdapter(MediaEndpointAdapter):
     endpoint_id = 'tv'
     device_id = None
+    history_id = HOME_EDGE_TV_HISTORY_ID
     label = TARGET_LABELS['tv']
     backend = 'mpv'
     family = 'tv'
-    capabilities = ('capture', 'handoff')
+    capabilities = ('capture', 'handoff', 'history')
 
     def status(self) -> dict:
         return player.status()
@@ -1367,10 +1667,11 @@ class TvEndpointAdapter(MediaEndpointAdapter):
 class SamsungEndpointAdapter(MediaEndpointAdapter):
     endpoint_id = 'samsung'
     device_id = SAMSUNG_DEVICE_ID
+    history_id = SAMSUNG_DEVICE_ID
     label = TARGET_LABELS['samsung']
     backend = 'samsung-media-receiver'
     family = 'tablet_kiosk'
-    capabilities = ('capture', 'handoff')
+    capabilities = ('capture', 'handoff', 'history')
 
     def status(self) -> dict:
         return _samsung_receiver_status()
@@ -1571,6 +1872,45 @@ def media_target_get() -> Response:
     })
 
 
+@app.get('/api/media/history')
+def media_history_get() -> Response:
+    _require()
+    endpoint = request.args.get('endpoint') or request.args.get('history_id') or None
+    return jsonify(_history_public_items(endpoint))
+
+
+@app.get('/api/media/history/<history_key>')
+def media_history_item_get(history_key: str) -> Response:
+    _require()
+    endpoint = request.args.get('endpoint') or request.args.get('history_id') or None
+    item = _history_find(endpoint, history_key)
+    if not item:
+        return jsonify({'error': 'Запис історії не знайдено.', 'history_id': _resolve_history_id(endpoint)}), 404
+    return jsonify({'history_id': _resolve_history_id(endpoint), 'item': item})
+
+
+@app.delete('/api/media/history/<history_key>')
+def media_history_item_delete(history_key: str) -> Response:
+    _require()
+    endpoint = request.args.get('endpoint') or request.args.get('history_id') or None
+    return jsonify({'status': 'ok', **_history_delete(endpoint, history_key)})
+
+
+@app.post('/api/media/history/<history_key>/resume')
+@app.post('/api/media/history/resume')
+def media_history_resume_post(history_key: str | None = None) -> Response:
+    _require()
+    data = request.get_json(silent=True) or {}
+    key = history_key or str(data.get('history_key') or data.get('key') or '')
+    endpoint = data.get('endpoint') or data.get('history_id') or request.args.get('endpoint') or None
+    try:
+        return jsonify({'status': 'ok', **_history_resume(endpoint, key)})
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'history_id': _resolve_history_id(endpoint)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'history_id': _resolve_history_id(endpoint)}), 409
+
+
 @app.put('/api/media/target')
 @app.post('/api/media/target')
 def media_target_set() -> Response:
@@ -1651,6 +1991,15 @@ def samsung_status_post() -> Response:
     else:
         allowed.pop('error', None)
     _atomic(SAMSUNG_RECEIVER_STATUS, allowed)
+    media = _receiver_media(allowed)
+    if media.get('job_id') or _read_json(SAMSUNG_RECEIVER_DESIRED).get('job_id'):
+        desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
+        merged_media = {**desired, **media}
+        try:
+            job, source = _find_job_source(merged_media.get('job_id'), merged_media.get('source_id'))
+        except Exception:
+            job, source = {}, {}
+        _record_history_progress(SAMSUNG_DEVICE_ID, merged_media, job=job, source=source, reason='samsung_periodic')
     return jsonify({'status': 'ok', **allowed})
 
 
@@ -1692,6 +2041,12 @@ def play() -> Response:
         return jsonify({'error': 'Потік не знайдено; оновіть список.'}), 404
     try:
         result = player.play(job, source, str(data.get('subtitles') or 'off'))
+        _record_history_progress(HOME_EDGE_TV_HISTORY_ID, {
+            'job_id': job.get('job_id'),
+            'source_id': source.get('source_id'),
+            'position_seconds': 0.0,
+            'playing': True,
+        }, job=job, source=source, reason='tv_play')
         return jsonify({'status': 'started', 'source': {'quality': source.get('quality'), 'translation': source.get('translation')}, **result})
     except Exception as exc:
         return jsonify({'error': str(exc)}), 502
@@ -1701,7 +2056,10 @@ def play() -> Response:
 def control(action: str) -> Response:
     _require()
     try:
-        return jsonify({'status': 'ok', **player.control(action)})
+        result = player.control(action)
+        player_status = result.get('player') if isinstance(result.get('player'), dict) else player.status()
+        _record_tv_history_from_status(player_status, reason='tv_control')
+        return jsonify({'status': 'ok', **result})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
@@ -1896,7 +2254,10 @@ def seek() -> Response:
     except (TypeError, ValueError):
         return jsonify({'error': 'Некоректна позиція відтворення.'}), 400
     try:
-        return jsonify({'status': 'ok', **player.seek_absolute(position)})
+        result = player.seek_absolute(position)
+        player_status = result.get('player') if isinstance(result.get('player'), dict) else player.status()
+        _record_tv_history_from_status(player_status, reason='tv_progress')
+        return jsonify({'status': 'ok', **result})
     except Exception as exc:
         return jsonify({'error': str(exc), 'player': player.status()}), 409
 
