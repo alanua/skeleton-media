@@ -27,6 +27,10 @@ CURRENT = STATE / 'current.json'
 IPTV_TRANSITION = STATE / 'tv-transition.json'
 WATCH_HISTORY = STATE / 'watch-history.json'
 WATCH_SCHEMA = 'skeleton.media.watch_history.v2'
+WATCH_HISTORY_ENDPOINTS = STATE / 'watch-history-endpoints.json'
+WATCH_ENDPOINT_SCHEMA = 'skeleton.media.endpoint_watch_history.v1'
+HOME_EDGE_TV_HISTORY_ID = 'home_edge_tv'
+SAMSUNG_HISTORY_ID = 'samsung_kiosk'
 LAST_VOD = STATE / 'last-vod.json'
 LAST_VOD_SCHEMA = 'skeleton.media.last_vod.v1'
 WATCH_INTERVAL_SECONDS = 5.0
@@ -34,6 +38,7 @@ WATCH_MIN_RESUME_SECONDS = 15.0
 WATCH_COMPLETE_REMAINING_SECONDS = 20.0
 WATCH_COMPLETE_RATIO = 0.995
 _WATCH_LOCK = threading.RLock()
+ENDPOINT_HISTORY_LOCK = _WATCH_LOCK
 _PLAYBACK_LOCK = threading.RLock()
 _PROGRESS_MONITOR_STARTED = False
 JOBS = STATE / 'jobs'
@@ -207,23 +212,120 @@ def content_identity(job: dict[str, Any], source: dict[str, Any]) -> dict[str, A
     }
 
 
+
 def _load_watch_history() -> dict[str, Any]:
+    """Read the immutable legacy v2 history for migration/fallback only."""
     with _WATCH_LOCK:
         try:
             data = json.loads(WATCH_HISTORY.read_text(encoding='utf-8'))
         except Exception:
             data = {}
-        if not isinstance(data, dict) or data.get('schema') != WATCH_SCHEMA or not isinstance(data.get('items'), dict):
+        if not isinstance(data, dict) or data.get('schema') != WATCH_SCHEMA or not isinstance(data.get('items'), (dict, list)):
             data = {'schema': WATCH_SCHEMA, 'updated_at': int(time.time()), 'items': {}}
         return data
 
 
-def _write_watch_history(data: dict[str, Any]) -> None:
-    with _WATCH_LOCK:
-        data['schema'] = WATCH_SCHEMA
-        data['updated_at'] = int(time.time())
-        _atomic_private(WATCH_HISTORY, data)
+def _legacy_history_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    value = data.get('items')
+    if isinstance(value, dict):
+        items: list[dict[str, Any]] = []
+        for key, raw in value.items():
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            item.setdefault('content_key', str(key))
+            item.setdefault('history_key', str(key))
+            if not item.get('job_id') and item.get('last_job_id'):
+                item['job_id'] = item.get('last_job_id')
+            if not item.get('source_id') and item.get('last_source_id'):
+                item['source_id'] = item.get('last_source_id')
+            if not item.get('title') and item.get('display_title'):
+                item['title'] = item.get('display_title')
+            items.append(item)
+        return items
+    if isinstance(value, list):
+        items = []
+        for raw in value:
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            if not item.get('job_id') and item.get('last_job_id'):
+                item['job_id'] = item.get('last_job_id')
+            if not item.get('source_id') and item.get('last_source_id'):
+                item['source_id'] = item.get('last_source_id')
+            if not item.get('title') and item.get('display_title'):
+                item['title'] = item.get('display_title')
+            items.append(item)
+        return items
+    return []
 
+
+def _legacy_samsung_history_item(item: dict[str, Any]) -> bool:
+    return str(item.get('last_reason') or item.get('reason') or '').strip().lower() == 'samsung_periodic'
+
+
+def _endpoint_history_default(legacy_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    legacy_items = list(legacy_items or [])
+    samsung_items = [dict(item) for item in legacy_items if _legacy_samsung_history_item(item)]
+    return {
+        'schema': WATCH_ENDPOINT_SCHEMA,
+        'version': 1,
+        'updated_at': int(time.time()),
+        'histories': {
+            HOME_EDGE_TV_HISTORY_ID: {'items': [dict(item) for item in legacy_items]},
+            SAMSUNG_HISTORY_ID: {'items': samsung_items},
+        },
+        'migration': {
+            'schema': WATCH_SCHEMA,
+            'version': 1,
+            'source': str(WATCH_HISTORY),
+            'source_counts': {
+                'legacy_total': len(legacy_items),
+                HOME_EDGE_TV_HISTORY_ID: len(legacy_items),
+                SAMSUNG_HISTORY_ID: len(samsung_items),
+            },
+        },
+    }
+
+
+def _load_endpoint_watch_history() -> dict[str, Any]:
+    with _WATCH_LOCK:
+        try:
+            data = json.loads(WATCH_HISTORY_ENDPOINTS.read_text(encoding='utf-8'))
+        except Exception:
+            data = {}
+        if isinstance(data, dict) and data.get('schema') == WATCH_ENDPOINT_SCHEMA and isinstance(data.get('histories'), dict):
+            return data
+        legacy = _load_watch_history()
+        data = _endpoint_history_default(_legacy_history_items(legacy))
+        _atomic_private(WATCH_HISTORY_ENDPOINTS, data)
+        return data
+
+
+def _write_endpoint_watch_history(data: dict[str, Any]) -> None:
+    with _WATCH_LOCK:
+        data['schema'] = WATCH_ENDPOINT_SCHEMA
+        data['version'] = int(data.get('version') or 1)
+        data['updated_at'] = int(time.time())
+        if not isinstance(data.get('histories'), dict):
+            data['histories'] = {}
+        _atomic_private(WATCH_HISTORY_ENDPOINTS, data)
+
+
+def _tv_endpoint_history_items(data: dict[str, Any]) -> list[dict[str, Any]]:
+    histories = data.setdefault('histories', {})
+    bucket = histories.setdefault(HOME_EDGE_TV_HISTORY_ID, {'items': []})
+    if not isinstance(bucket, dict):
+        bucket = {'items': []}
+        histories[HOME_EDGE_TV_HISTORY_ID] = bucket
+    if not isinstance(bucket.get('items'), list):
+        bucket['items'] = []
+    return bucket['items']
+
+
+def _write_watch_history(data: dict[str, Any]) -> None:
+    """Legacy writer retained as an explicit fail-closed compatibility guard."""
+    raise RuntimeError('Legacy shared watch history is read-only after endpoint-history migration.')
 
 def _job_source_from_current(current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
     job_id = str(current.get('job_id') or '')
@@ -285,12 +387,19 @@ def _last_vod_reference() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any
         if resolved is not None:
             return resolved[0], resolved[1], record
 
-    history = _load_watch_history().get('items', {})
+    endpoint_store = _load_endpoint_watch_history()
     candidates = sorted(
-        (item for item in history.values() if isinstance(item, dict)),
+        (item for item in _tv_endpoint_history_items(endpoint_store) if isinstance(item, dict)),
         key=lambda item: int(item.get('updated_at') or 0),
         reverse=True,
     )
+    if not candidates:
+        legacy_items = _legacy_history_items(_load_watch_history())
+        candidates = sorted(
+            (item for item in legacy_items if isinstance(item, dict)),
+            key=lambda item: int(item.get('updated_at') or 0),
+            reverse=True,
+        )
     for item in candidates:
         resolved = _resolve_vod_reference(str(item.get('last_job_id') or ''), str(item.get('last_source_id') or ''))
         if resolved is None:
@@ -331,11 +440,19 @@ def _completed(position: float, duration: float, eof_reached: bool = False) -> b
     return remaining <= WATCH_COMPLETE_REMAINING_SECONDS or position / duration >= WATCH_COMPLETE_RATIO
 
 
+
 def _history_resume(job: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
     identity = content_identity(job, source)
     if source.get('live') or source.get('backend') == 'iptv' or job.get('live'):
         return {**identity, 'resume_position': 0.0, 'previously_completed': False, 'history_found': False}
-    item = _load_watch_history().get('items', {}).get(identity['content_key']) or {}
+    history = _load_endpoint_watch_history()
+    item = next(
+        (
+            entry for entry in _tv_endpoint_history_items(history)
+            if isinstance(entry, dict) and str(entry.get('content_key') or '') == identity['content_key']
+        ),
+        {},
+    )
     completed = bool(item.get('completed'))
     position = float(item.get('position_seconds') or 0.0)
     duration = float(item.get('duration_seconds') or source.get('duration') or 0.0)
@@ -353,12 +470,19 @@ def _save_progress_snapshot(job: dict[str, Any], source: dict[str, Any], positio
     identity = content_identity(job, source)
     complete = _completed(position, duration, eof_reached)
     stored_position = 0.0 if complete or position < WATCH_MIN_RESUME_SECONDS else max(0.0, position)
-    history = _load_watch_history()
-    items = history.setdefault('items', {})
-    previous = items.get(identity['content_key']) if isinstance(items.get(identity['content_key']), dict) else {}
+    history = _load_endpoint_watch_history()
+    items = _tv_endpoint_history_items(history)
+    previous = next(
+        (
+            item for item in items
+            if isinstance(item, dict) and str(item.get('content_key') or '') == identity['content_key']
+        ),
+        {},
+    )
     now = int(time.time())
     entry = {
         **identity,
+        'history_key': identity['content_key'],
         'display_title': _canonical_display_title(job, source),
         'position_seconds': round(stored_position, 3),
         'last_observed_position_seconds': round(max(0.0, position), 3),
@@ -367,8 +491,13 @@ def _save_progress_snapshot(job: dict[str, Any], source: dict[str, Any], positio
         'last_reason': reason,
         'last_job_id': job.get('job_id'),
         'last_source_id': source.get('source_id'),
+        'job_id': job.get('job_id'),
+        'source_id': source.get('source_id'),
         'last_site_host': job.get('site_host'),
         'last_translation': source.get('translation'),
+        'season': source.get('season'),
+        'episode': source.get('episode'),
+        'translation': source.get('translation'),
         'updated_at': now,
         'first_seen_at': previous.get('first_seen_at') or now,
     }
@@ -376,10 +505,13 @@ def _save_progress_snapshot(job: dict[str, Any], source: dict[str, Any], positio
         entry['completed_at'] = now
     elif previous.get('completed_at'):
         entry['completed_at'] = previous.get('completed_at')
-    items[identity['content_key']] = entry
-    _write_watch_history(history)
+    if previous:
+        previous.clear()
+        previous.update(entry)
+    else:
+        items.insert(0, entry)
+    _write_endpoint_watch_history(history)
     return entry
-
 
 def save_current_progress(reason: str = 'periodic') -> dict[str, Any] | None:
     with _PLAYBACK_LOCK:

@@ -36,6 +36,9 @@ except ModuleNotFoundError:  # pragma: no cover
         def put(self, rule, *_args, **_kwargs):
             return self._route(rule, "PUT")
 
+        def delete(self, rule, *_args, **_kwargs):
+            return self._route(rule, "DELETE")
+
         def after_request(self, func):
             return func
 
