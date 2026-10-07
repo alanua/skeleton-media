@@ -14,7 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import yaml
@@ -1358,7 +1358,7 @@ def _playback_position(status: dict) -> float:
 def _playback_paused(status: dict) -> bool:
     if isinstance(status.get('pause'), bool):
         return bool(status.get('pause'))
-    if str(status.get('mode') or '').strip().lower() in {'video', 'tv'} and isinstance(status.get('playing'), bool):
+    if str(status.get('mode') or '').strip().lower() in {'video', 'tv', 'youtube'} and isinstance(status.get('playing'), bool):
         return not bool(status.get('playing'))
     state = str(status.get('playback_state') or status.get('playback_status') or '').strip().lower()
     return state in {'paused', 'pause'}
@@ -1371,6 +1371,64 @@ def _playback_playing(status: dict) -> bool:
         return not bool(status.get('pause'))
     state = str(status.get('playback_state') or status.get('playback_status') or '').strip().lower()
     return state in {'playing', 'play'}
+
+
+def _youtube_video_id(value: object) -> str | None:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if re.fullmatch(r'[A-Za-z0-9_-]{11}', text):
+        return text
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return None
+    host = parsed.netloc.lower()
+    if host.endswith('youtu.be'):
+        candidate = parsed.path.strip('/').split('/')[0]
+        return candidate if re.fullmatch(r'[A-Za-z0-9_-]{11}', candidate or '') else None
+    if 'youtube.com' in host or 'youtube-nocookie.com' in host:
+        fragment = urlparse(parsed.fragment)
+        query_id = (parse_qs(parsed.query).get('v') or parse_qs(parsed.fragment).get('v') or parse_qs(fragment.query).get('v') or [''])[0]
+        if re.fullmatch(r'[A-Za-z0-9_-]{11}', query_id or ''):
+            return query_id
+        parts = [part for part in parsed.path.split('/') if part]
+        for marker in ('embed', 'shorts', 'live', 'watch'):
+            if marker in parts:
+                index = parts.index(marker) + 1
+                if index < len(parts) and re.fullmatch(r'[A-Za-z0-9_-]{11}', parts[index]):
+                    return parts[index]
+        fragment_path = fragment.path
+        fragment_parts = [part for part in fragment_path.split('/') if part]
+        if 'watch' in fragment_parts:
+            index = fragment_parts.index('watch') + 1
+            if index < len(fragment_parts) and re.fullmatch(r'[A-Za-z0-9_-]{11}', fragment_parts[index]):
+                return fragment_parts[index]
+    return None
+
+
+def _source_video_id(source: dict) -> str | None:
+    for key in ('video_id', 'youtube_id', 'youtube_video_id'):
+        found = _youtube_video_id(source.get(key))
+        if found:
+            return found
+    return _youtube_video_id(source.get('url'))
+
+
+def _youtube_watch_url(video_id: str, position: float = 0.0) -> str:
+    query = {'v': video_id}
+    seconds = int(max(0.0, float(position)))
+    if seconds > 0:
+        query['t'] = f'{seconds}s'
+    return urlunparse(('https', 'www.youtube.com', '/watch', '', urlencode(query), ''))
+
+
+def _samsung_source_payload(source: dict, position: float) -> tuple[str, str, str | None]:
+    video_id = _source_video_id(source)
+    kind = str(source.get('kind') or '').strip().lower()
+    if video_id and (kind == 'youtube' or 'youtube' in str(source.get('url') or '').lower()):
+        return 'youtube', _youtube_watch_url(video_id, position), video_id
+    return 'video', str(source.get('url') or ''), video_id
 
 
 def _same_source_episode(left: dict, right: dict) -> bool:
@@ -1458,11 +1516,12 @@ def _samsung_action_id() -> str:
 
 def _write_samsung_desired(job: dict, source: dict, *, position: float) -> dict:
     revision = _next_samsung_revision()
+    mode, url, video_id = _samsung_source_payload(source, position)
     desired = {
         'schema': 'skeleton.samsung.media_desired.v1',
         'revision': revision,
-        'mode': 'video',
-        'url': source.get('url'),
+        'mode': mode,
+        'url': url,
         'position_seconds': round(max(0.0, float(position)), 3),
         'action': 'play',
         'action_id': _samsung_action_id(),
@@ -1480,6 +1539,8 @@ def _write_samsung_desired(job: dict, source: dict, *, position: float) -> dict:
         'channel_number': source.get('channel_number'),
         'picon': source.get('picon'),
     }
+    if video_id:
+        desired['video_id'] = video_id
     _atomic(SAMSUNG_RECEIVER_DESIRED, desired)
     return desired
 
@@ -1525,11 +1586,21 @@ def _destination_verified(status: dict, *, revision: int, source_id: object, pos
     return _playback_playing(media) and not _playback_paused(media)
 
 
+def _receiver_acknowledged(status: dict, desired: dict) -> bool:
+    if int(status.get('revision') or 0) < int(desired.get('revision') or 0):
+        return False
+    expected_mode = str(desired.get('mode') or '').strip().lower()
+    observed_mode = str(status.get('mode') or _receiver_media(status).get('mode') or '').strip().lower()
+    return not expected_mode or observed_mode == expected_mode
+
+
 def _wait_for_samsung_postcondition(desired: dict) -> dict:
     deadline = time.monotonic() + MEDIA_TARGET_WAIT_SECONDS
     last = {}
     while time.monotonic() <= deadline:
         last = _samsung_receiver_status()
+        if str(desired.get('mode') or '').strip().lower() == 'youtube' and _receiver_acknowledged(last, desired):
+            return last
         if _destination_verified(
             last,
             revision=int(desired.get('revision') or 0),
@@ -1542,12 +1613,18 @@ def _wait_for_samsung_postcondition(desired: dict) -> dict:
     raise RuntimeError(f'Samsung не підтвердив цільовий стан: revision={desired.get("revision")} status={last}')
 
 
-def _wait_for_tv_postcondition(*, source_id: object, position: float, paused: bool) -> dict:
+def _wait_for_tv_postcondition(*, source_id: object, position: float, paused: bool, video_id: object = None, url: object = None) -> dict:
     deadline = time.monotonic() + MEDIA_TARGET_WAIT_SECONDS
     last = {}
+    expected_video_id = _youtube_video_id(video_id) or _youtube_video_id(url)
     while time.monotonic() <= deadline:
         last = player.status()
-        if str(last.get('source_id') or '') == str(source_id or '') and abs(_playback_position(last) - float(position)) <= MEDIA_TARGET_POSITION_TOLERANCE_SECONDS:
+        observed_video_id = _youtube_video_id(last.get('video_id')) or _youtube_video_id(last.get('url'))
+        identity_matches = (
+            str(last.get('source_id') or '') == str(source_id or '')
+            or (expected_video_id and observed_video_id == expected_video_id)
+        )
+        if identity_matches and abs(_playback_position(last) - float(position)) <= MEDIA_TARGET_POSITION_TOLERANCE_SECONDS:
             if paused and _playback_paused(last) and not _playback_playing(last):
                 return last
             if not paused and _playback_playing(last) and not _playback_paused(last):
@@ -1574,6 +1651,29 @@ def _samsung_session_snapshot() -> tuple[dict, dict, dict]:
         raise RuntimeError('Samsung не повідомив відновлювану медіасесію.')
     job, source = _find_job_source(job_id, source_id)
     return status, job, source
+
+
+def _capture_media_for_endpoint(endpoint_id: str, status: dict) -> dict:
+    media = dict(_receiver_media(status))
+    if endpoint_id == 'samsung':
+        desired = _read_json(SAMSUNG_RECEIVER_DESIRED)
+        if not any(key in media for key in ('position_seconds', 'position', 'time-pos', 'time_pos')) and 'position_seconds' in desired:
+            media['position_seconds'] = desired.get('position_seconds')
+        action = str(desired.get('action') or '').strip().lower()
+        if 'playing' not in media and action in {'play', 'pause'}:
+            media['playing'] = action == 'play'
+        if 'pause' not in media and action in {'play', 'pause'}:
+            media['pause'] = action == 'pause'
+        video_id = (
+            _youtube_video_id(media.get('video_id'))
+            or _youtube_video_id(desired.get('video_id'))
+            or _youtube_video_id(desired.get('url'))
+        )
+        if video_id:
+            media['video_id'] = video_id
+        if not media.get('url') and desired.get('url'):
+            media['url'] = desired.get('url')
+    return media
 
 
 class MediaEndpointAdapter:
@@ -1656,6 +1756,8 @@ class TvEndpointAdapter(MediaEndpointAdapter):
             source_id=capture.get('source_id'),
             position=float(capture.get('position_seconds') or 0.0),
             paused=bool(capture.get('paused')),
+            video_id=capture.get('video_id'),
+            url=capture.get('url'),
         )
 
     def pause_source_after_move(self, capture: dict) -> dict:
@@ -1731,19 +1833,24 @@ def _capture_from_endpoint(endpoint_id: str, *, owner: str | None = None) -> dic
     if 'capture' not in adapter.capabilities:
         raise RuntimeError(f'{adapter.label} не підтримує захоплення.')
     status, job, source = adapter.session_snapshot()
-    media = _receiver_media(status)
-    return {
+    media = _capture_media_for_endpoint(endpoint_id, status)
+    capture = {
         'schema': 'skeleton.media.capture.v1',
         'owner': owner or MEDIA_CAPTURE_OWNER,
         'capture_id': uuid.uuid4().hex,
         'source_endpoint': endpoint_id,
         'job_id': job.get('job_id'),
         'source_id': source.get('source_id'),
+        'url': media.get('url') or source.get('url'),
         'position_seconds': round(_playback_position(media), 3),
         'paused': _playback_paused(media),
         'was_playing': _playback_playing(media),
         'created_at': int(time.time()),
     }
+    video_id = _youtube_video_id(media.get('video_id')) or _source_video_id(source) or _youtube_video_id(capture.get('url'))
+    if video_id:
+        capture['video_id'] = video_id
+    return capture
 
 
 def _charge_media_capture(endpoint_id: str | None = None) -> dict:
@@ -1767,7 +1874,12 @@ def _handoff_capture_to_endpoint(target: str) -> dict:
         raise RuntimeError('Немає зарядженого медіа-захоплення.')
     source_endpoint = str(charge.get('source_endpoint') or '').strip().lower()
     if source_endpoint == target:
-        return {**state, 'unchanged': True}
+        return {
+            **_set_media_target(target, reason='capture_released', charge=_CLEAR_CHARGE),
+            'unchanged': False,
+            'discharged': True,
+            'returned_to_source': True,
+        }
     source = adapters.get(source_endpoint)
     if not source:
         raise RuntimeError('Джерельний медіа-екран більше не доступний.')

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from test_skeleton_cast_media_target import FakePlayer, _auto_observe, _install_runtime, _source, cast_app
+from test_skeleton_cast_media_target import FakePlayer, _auto_observe, _install_runtime, _job, _source, cast_app
 
 
 class ProjectorEndpointAdapter(cast_app.MediaEndpointAdapter):
@@ -110,7 +110,7 @@ def test_handoff_failure_keeps_source_playing_and_charge_authoritative(monkeypat
     assert fake.calls == []
 
 
-def test_same_source_handoff_is_idempotent_and_does_not_clear_charge(monkeypatch, tmp_path: Path) -> None:
+def test_same_endpoint_second_press_releases_capture_without_mutating_playback(monkeypatch, tmp_path: Path) -> None:
     _reset_extra_adapters()
     fake = FakePlayer(paused=False)
     _install_runtime(monkeypatch, tmp_path, fake)
@@ -118,10 +118,113 @@ def test_same_source_handoff_is_idempotent_and_does_not_clear_charge(monkeypatch
 
     result = cast_app._handoff_capture_to_endpoint("tv")
 
-    assert result["unchanged"] is True
-    assert result["charged"] is True
-    assert result["charge"]["source_endpoint"] == "tv"
+    assert result["discharged"] is True
+    assert result["returned_to_source"] is True
+    assert result["charged"] is False
+    assert result["charge"] is None
+    assert cast_app._media_target_state()["charged"] is False
     assert fake.calls == []
+
+
+def test_tv_to_samsung_youtube_normalizes_tv_url_and_accepts_revision_mode_ack(monkeypatch, tmp_path: Path) -> None:
+    _reset_extra_adapters()
+    video_id = "abcDEF12345"
+    fake = FakePlayer(paused=False, source_id="youtube-tv", position=95.4)
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._save(
+        _job(
+            [
+                _source(
+                    "youtube-tv",
+                    height=720,
+                    quality="720p",
+                    kind="youtube",
+                    url=f"https://www.youtube.com/tv#/watch?v={video_id}",
+                )
+            ]
+        )
+    )
+    original_load = cast_app._write_samsung_desired
+    writes: list[dict] = []
+
+    def write_load(job: dict, source: dict, *, position: float) -> dict:
+        desired = original_load(job, source, position=position)
+        cast_app._atomic(
+            cast_app.SAMSUNG_RECEIVER_STATUS,
+            {
+                "schema": "skeleton.samsung.media_status.v1",
+                "device_id": cast_app.SAMSUNG_DEVICE_ID,
+                "revision": desired["revision"],
+                "mode": desired["mode"],
+                "app": "Samsung Media Receiver",
+            },
+        )
+        writes.append(dict(desired))
+        return desired
+
+    monkeypatch.setattr(cast_app, "_write_samsung_desired", write_load)
+
+    cast_app._charge_media_capture("tv")
+    result = cast_app._handoff_capture_to_endpoint("samsung")
+
+    assert result["charged"] is False
+    assert writes[0]["mode"] == "youtube"
+    assert writes[0]["video_id"] == video_id
+    assert writes[0]["url"] == f"https://www.youtube.com/watch?v={video_id}&t=95s"
+    assert fake.calls == [("control", "pause")]
+
+
+def test_samsung_to_tv_youtube_capture_uses_desired_video_id_and_position_fallback(monkeypatch, tmp_path: Path) -> None:
+    _reset_extra_adapters()
+    video_id = "ZYXwvUT9876"
+    fake = FakePlayer(paused=True, source_id="src-1080", position=0.0)
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._save(
+        _job(
+            [
+                _source(
+                    "youtube-tv",
+                    height=720,
+                    quality="720p",
+                    kind="youtube",
+                    url=f"https://www.youtube.com/watch?v={video_id}",
+                    video_id=video_id,
+                )
+            ]
+        )
+    )
+    cast_app._set_media_target("samsung", reason="test")
+    cast_app._atomic(
+        cast_app.SAMSUNG_RECEIVER_DESIRED,
+        {
+            "schema": "skeleton.samsung.media_desired.v1",
+            "revision": 7,
+            "mode": "youtube",
+            "url": f"https://www.youtube.com/watch?v={video_id}&t=44s",
+            "video_id": video_id,
+            "position_seconds": 44.0,
+            "action": "pause",
+            "job_id": "a" * 16,
+            "source_id": "youtube-tv",
+        },
+    )
+    cast_app._atomic(
+        cast_app.SAMSUNG_RECEIVER_STATUS,
+        {
+            "schema": "skeleton.samsung.media_status.v1",
+            "device_id": cast_app.SAMSUNG_DEVICE_ID,
+            "revision": 7,
+            "mode": "youtube",
+            "app": "SmartTube",
+        },
+    )
+
+    result = cast_app._switch_media_target("tv")
+
+    assert result["target"] == "tv"
+    assert fake.calls == [("play", "youtube-tv"), ("seek", 44.0), ("control", "pause")]
+    assert fake.status()["video_id"] == video_id
+    assert fake.status()["pause"] is True
 
 
 def test_capture_and_handoff_actions_are_available_via_target_and_handoff_apis(monkeypatch, tmp_path: Path) -> None:

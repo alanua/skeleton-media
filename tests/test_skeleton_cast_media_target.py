@@ -119,6 +119,8 @@ class FakePlayer:
                 "running": True,
                 "job_id": job.get("job_id"),
                 "source_id": source.get("source_id"),
+                "url": source.get("url"),
+                "video_id": source.get("video_id"),
                 "time-pos": 0.0,
                 "pause": False,
                 "playing": True,
@@ -164,10 +166,12 @@ def _source(
     kind: str = "search-release",
     video_codec: str = "h264",
     audio_codec: str = "aac",
+    url: str | None = None,
+    video_id: str | None = None,
 ) -> dict:
-    return {
+    source = {
         "source_id": source_id,
-        "url": f"https://media.example/{source_id}.mp4",
+        "url": url or f"https://media.example/{source_id}.mp4",
         "kind": kind,
         "quality": quality,
         "height": height,
@@ -179,6 +183,9 @@ def _source(
         "audio_codec": audio_codec,
         "headers": {"Referer": "https://site.example/show"},
     }
+    if video_id:
+        source["video_id"] = video_id
+    return source
 
 
 def _install_runtime(monkeypatch, tmp_path: Path, fake_player: FakePlayer) -> None:
