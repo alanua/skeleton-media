@@ -78,6 +78,7 @@ SAMSUNG_DEVICE_ID = 'samsung_kiosk'
 TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
 MEDIA_TARGET_POSITION_TOLERANCE_SECONDS = 12.0
 MEDIA_TARGET_WAIT_SECONDS = 8.0
+_CLEAR_CHARGE = object()
 
 
 def _atomic(path: Path, value: dict) -> None:
@@ -113,6 +114,7 @@ def _read_json(path: Path) -> dict:
 
 
 HOME_EDGE_DEVICE_ID = 'home_edge_01'
+MEDIA_CAPTURE_OWNER = HOME_EDGE_DEVICE_ID
 TRUSTED_CLIENT_IDS = tuple(
     dict.fromkeys(
         [item.strip() for item in os.environ.get('SKELETON_MEDIA_TRUSTED_CLIENT_IDS', '').split(',') if item.strip()]
@@ -1000,35 +1002,53 @@ def _media_target_default() -> dict:
         'updated_at': int(time.time()),
         'revision': 0,
         'device_id': None,
+        'charged': False,
+        'charge': None,
     }
 
 
 def _media_target_state() -> dict:
     state = _read_json(MEDIA_TARGET_STATE)
     target = str(state.get('target') or 'tv').strip().lower()
-    if target not in TARGET_LABELS:
+    labels = _endpoint_labels()
+    if target not in labels:
         target = 'tv'
+    charge = state.get('charge') if isinstance(state.get('charge'), dict) else None
     return {
         **_media_target_default(),
         **state,
         'target': target,
-        'label': TARGET_LABELS[target],
-        'device_id': SAMSUNG_DEVICE_ID if target == 'samsung' else None,
+        'label': labels[target],
+        'device_id': _endpoint_adapters()[target].device_id,
+        'charged': bool(charge),
+        'charge': charge,
     }
 
 
-def _set_media_target(target: str, *, reason: str, observed: dict | None = None) -> dict:
+def _set_media_target(target: str, *, reason: str, observed: dict | None = None, charge: dict | object = None) -> dict:
     previous = _media_target_state()
     revision = int(previous.get('revision') or 0) + (0 if previous.get('target') == target else 1)
+    adapter = _endpoint_adapters()[target]
     state = {
         'schema': 'skeleton.media.target.v1',
         'target': target,
-        'label': TARGET_LABELS[target],
-        'device_id': SAMSUNG_DEVICE_ID if target == 'samsung' else None,
+        'label': adapter.label,
+        'device_id': adapter.device_id,
         'revision': revision,
         'updated_at': int(time.time()),
         'reason': reason,
     }
+    if charge is None:
+        existing = previous.get('charge') if isinstance(previous.get('charge'), dict) else None
+        if existing:
+            state['charge'] = existing
+            state['charged'] = True
+    elif isinstance(charge, dict):
+        state['charge'] = charge
+        state['charged'] = True
+    elif charge is _CLEAR_CHARGE:
+        state['charge'] = None
+        state['charged'] = False
     if isinstance(observed, dict):
         state['observed'] = observed
     _atomic(MEDIA_TARGET_STATE, state)
@@ -1272,44 +1292,218 @@ def _samsung_session_snapshot() -> tuple[dict, dict, dict]:
     return status, job, source
 
 
+class MediaEndpointAdapter:
+    endpoint_id = ''
+    device_id = None
+    label = ''
+    backend = ''
+    family = ''
+    capabilities: tuple[str, ...] = ()
+
+    def descriptor(self) -> dict:
+        return {
+            'target': self.endpoint_id,
+            'endpoint_id': self.endpoint_id,
+            'device_id': self.device_id,
+            'label': self.label,
+            'backend': self.backend,
+            'family': self.family,
+            'capabilities': list(self.capabilities),
+        }
+
+    def status(self) -> dict:
+        return {}
+
+    def session_snapshot(self) -> tuple[dict, dict, dict]:
+        raise RuntimeError(f'{self.label} не має відновлюваної медіасесії.')
+
+    def adapt_source(self, job: dict, current_source: dict) -> dict:
+        return current_source
+
+    def start_from_capture(self, capture: dict) -> dict:
+        raise RuntimeError(f'{self.label} не підтримує запуск із захоплення.')
+
+    def verify_destination(self, capture: dict, started: dict) -> dict:
+        raise RuntimeError(f'{self.label} не підтвердив цільовий стан.')
+
+    def pause_source_after_move(self, capture: dict) -> dict:
+        return {}
+
+
+class TvEndpointAdapter(MediaEndpointAdapter):
+    endpoint_id = 'tv'
+    device_id = None
+    label = TARGET_LABELS['tv']
+    backend = 'mpv'
+    family = 'tv'
+    capabilities = ('capture', 'handoff')
+
+    def status(self) -> dict:
+        return player.status()
+
+    def session_snapshot(self) -> tuple[dict, dict, dict]:
+        return _tv_session_snapshot()
+
+    def start_from_capture(self, capture: dict) -> dict:
+        job, source = _find_job_source(capture.get('job_id'), capture.get('source_id'))
+        player.play(job, source, 'off')
+        player.seek_absolute(float(capture.get('position_seconds') or 0.0))
+        player.control('pause' if capture.get('paused') else 'play')
+        return {'source_id': source.get('source_id')}
+
+    def verify_destination(self, capture: dict, started: dict) -> dict:
+        return _wait_for_tv_postcondition(
+            source_id=capture.get('source_id'),
+            position=float(capture.get('position_seconds') or 0.0),
+            paused=bool(capture.get('paused')),
+        )
+
+    def pause_source_after_move(self, capture: dict) -> dict:
+        if capture.get('was_playing'):
+            return player.control('pause')
+        return {}
+
+
+class SamsungEndpointAdapter(MediaEndpointAdapter):
+    endpoint_id = 'samsung'
+    device_id = SAMSUNG_DEVICE_ID
+    label = TARGET_LABELS['samsung']
+    backend = 'samsung-media-receiver'
+    family = 'tablet_kiosk'
+    capabilities = ('capture', 'handoff')
+
+    def status(self) -> dict:
+        return _samsung_receiver_status()
+
+    def session_snapshot(self) -> tuple[dict, dict, dict]:
+        return _samsung_session_snapshot()
+
+    def adapt_source(self, job: dict, current_source: dict) -> dict:
+        return _adapt_source_for_samsung(job, current_source)
+
+    def start_from_capture(self, capture: dict) -> dict:
+        job, current_source = _find_job_source(capture.get('job_id'), capture.get('source_id'))
+        source = self.adapt_source(job, current_source)
+        desired = _write_samsung_desired(job, source, position=float(capture.get('position_seconds') or 0.0))
+        if capture.get('paused'):
+            desired = _write_samsung_action('pause')
+        return desired
+
+    def verify_destination(self, capture: dict, started: dict) -> dict:
+        return _wait_for_samsung_postcondition(started)
+
+    def pause_source_after_move(self, capture: dict) -> dict:
+        if capture.get('was_playing'):
+            pause_desired = _write_samsung_action('pause')
+            try:
+                return _wait_for_samsung_postcondition(pause_desired)
+            except RuntimeError:
+                return {}
+        return {}
+
+
+_EXTRA_MEDIA_ENDPOINT_ADAPTERS: dict[str, MediaEndpointAdapter] = {}
+
+
+def _endpoint_adapters() -> dict[str, MediaEndpointAdapter]:
+    adapters: dict[str, MediaEndpointAdapter] = {
+        'tv': TvEndpointAdapter(),
+        'samsung': SamsungEndpointAdapter(),
+    }
+    adapters.update(_EXTRA_MEDIA_ENDPOINT_ADAPTERS)
+    return adapters
+
+
+def _endpoint_labels() -> dict[str, str]:
+    return {endpoint_id: adapter.label for endpoint_id, adapter in _endpoint_adapters().items()}
+
+
+def _endpoint_descriptors() -> list[dict]:
+    return [adapter.descriptor() for adapter in _endpoint_adapters().values()]
+
+
+def _capture_from_endpoint(endpoint_id: str, *, owner: str | None = None) -> dict:
+    adapters = _endpoint_adapters()
+    if endpoint_id not in adapters:
+        raise ValueError('Невідомий медіа-екран.')
+    adapter = adapters[endpoint_id]
+    if 'capture' not in adapter.capabilities:
+        raise RuntimeError(f'{adapter.label} не підтримує захоплення.')
+    status, job, source = adapter.session_snapshot()
+    media = _receiver_media(status)
+    return {
+        'schema': 'skeleton.media.capture.v1',
+        'owner': owner or MEDIA_CAPTURE_OWNER,
+        'capture_id': uuid.uuid4().hex,
+        'source_endpoint': endpoint_id,
+        'job_id': job.get('job_id'),
+        'source_id': source.get('source_id'),
+        'position_seconds': round(_playback_position(media), 3),
+        'paused': _playback_paused(media),
+        'was_playing': _playback_playing(media),
+        'created_at': int(time.time()),
+    }
+
+
+def _charge_media_capture(endpoint_id: str | None = None) -> dict:
+    state = _media_target_state()
+    source_endpoint = str(endpoint_id or state.get('target') or 'tv').strip().lower()
+    charge = _capture_from_endpoint(source_endpoint)
+    return {**_set_media_target(str(state.get('target') or 'tv'), reason='capture_charged', charge=charge), 'unchanged': False}
+
+
+def _handoff_capture_to_endpoint(target: str) -> dict:
+    target = str(target or '').strip().lower()
+    adapters = _endpoint_adapters()
+    if target not in adapters:
+        raise ValueError('Невідомий медіа-екран.')
+    destination = adapters[target]
+    if 'handoff' not in destination.capabilities:
+        raise RuntimeError(f'{destination.label} не підтримує прийом захоплення.')
+    state = _media_target_state()
+    charge = state.get('charge') if isinstance(state.get('charge'), dict) else None
+    if not charge:
+        raise RuntimeError('Немає зарядженого медіа-захоплення.')
+    source_endpoint = str(charge.get('source_endpoint') or '').strip().lower()
+    if source_endpoint == target:
+        return {**state, 'unchanged': True}
+    source = adapters.get(source_endpoint)
+    if not source:
+        raise RuntimeError('Джерельний медіа-екран більше не доступний.')
+    started = destination.start_from_capture(charge)
+    observed = destination.verify_destination(charge, started)
+    source.pause_source_after_move(charge)
+    return {
+        **_set_media_target(target, reason='handoff_verified', observed=observed, charge=_CLEAR_CHARGE),
+        'unchanged': False,
+        'desired': started,
+    }
+
+
+def _select_media_target(target: str) -> dict:
+    target = str(target or '').strip().lower()
+    if target not in _endpoint_adapters():
+        raise ValueError('Невідомий медіа-екран.')
+    current = _media_target_state()
+    if current.get('target') == target:
+        return {**current, 'unchanged': True}
+    return {**_set_media_target(target, reason='selected'), 'unchanged': False}
+
+
 def _switch_media_target(target: str) -> dict:
     target = str(target or '').strip().lower()
-    if target not in TARGET_LABELS:
+    adapters = _endpoint_adapters()
+    if target not in adapters:
         raise ValueError('Невідомий медіа-екран.')
     current = _media_target_state()
     if current.get('target') == target:
         return {**current, 'unchanged': True}
 
-    if target == 'samsung':
-        source_status, job, current_source = _tv_session_snapshot()
-        position = _playback_position(source_status)
-        paused = _playback_paused(source_status)
-        samsung_source = _adapt_source_for_samsung(job, current_source)
-        desired = _write_samsung_desired(job, samsung_source, position=position)
-        observed = _wait_for_samsung_postcondition(desired)
-        if paused:
-            desired = _write_samsung_action('pause')
-            observed = _wait_for_samsung_postcondition(desired)
-        else:
-            player.control('pause')
-        return {**_set_media_target('samsung', reason='handoff_verified', observed=observed), 'unchanged': False, 'desired': desired}
-
-    source_status, job, source = _samsung_session_snapshot()
-    media = _receiver_media(source_status)
-    position = _playback_position(media)
-    paused = _playback_paused(media)
-    was_playing = _playback_playing(media)
-    player.play(job, source, 'off')
-    player.seek_absolute(position)
-    player.control('pause' if paused else 'play')
-    observed = _wait_for_tv_postcondition(source_id=source.get('source_id'), position=position, paused=paused)
-    if was_playing:
-        pause_desired = _write_samsung_action('pause')
-        try:
-            _wait_for_samsung_postcondition(pause_desired)
-        except RuntimeError:
-            pass
-    return {**_set_media_target('tv', reason='handoff_verified', observed=observed), 'unchanged': False}
+    charge = _capture_from_endpoint(str(current.get('target') or 'tv'))
+    started = adapters[target].start_from_capture(charge)
+    observed = adapters[target].verify_destination(charge, started)
+    adapters[str(current.get('target') or 'tv')].pause_source_after_move(charge)
+    return {**_set_media_target(target, reason='handoff_verified', observed=observed), 'unchanged': False, 'desired': started}
 
 
 @app.post('/api/media/search')
@@ -1367,7 +1561,7 @@ def media_target_get() -> Response:
     receiver = _samsung_receiver_status()
     return jsonify({
         **state,
-        'targets': [{'target': key, 'label': label, 'device_id': SAMSUNG_DEVICE_ID if key == 'samsung' else None} for key, label in TARGET_LABELS.items()],
+        'targets': _endpoint_descriptors(),
         'samsung': {
             'device_id': SAMSUNG_DEVICE_ID,
             'desired_revision': desired.get('revision'),
@@ -1383,7 +1577,29 @@ def media_target_set() -> Response:
     _require()
     data = request.get_json(silent=True) or {}
     try:
-        return jsonify({'status': 'ok', **_switch_media_target(str(data.get('target') or ''))})
+        action = str(data.get('action') or data.get('command') or 'select').strip().lower()
+        if action in {'capture', 'charge'}:
+            result = _charge_media_capture(str(data.get('source') or data.get('source_endpoint') or '') or None)
+        elif action in {'handoff', 'move', 'discharge'}:
+            result = _handoff_capture_to_endpoint(str(data.get('target') or ''))
+        else:
+            result = _select_media_target(str(data.get('target') or ''))
+        return jsonify({'status': 'ok', **result})
+    except ValueError as exc:
+        return jsonify({'error': str(exc), **_media_target_state()}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc), **_media_target_state()}), 409
+
+
+@app.post('/api/media/handoff')
+def media_handoff_post() -> Response:
+    _require()
+    data = request.get_json(silent=True) or {}
+    try:
+        target = str(data.get('target') or data.get('destination') or '')
+        if data.get('capture') or str(data.get('action') or '').strip().lower() in {'capture', 'charge'}:
+            return jsonify({'status': 'ok', **_charge_media_capture(str(data.get('source') or data.get('source_endpoint') or '') or None)})
+        return jsonify({'status': 'ok', **_handoff_capture_to_endpoint(target)})
     except ValueError as exc:
         return jsonify({'error': str(exc), **_media_target_state()}), 400
     except Exception as exc:
