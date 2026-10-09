@@ -1,21 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
-import types
 from pathlib import Path
 
 import pytest
 
-bs4 = types.ModuleType("bs4")
-bs4.BeautifulSoup = lambda *args, **kwargs: None
-sys.modules.setdefault("bs4", bs4)
-
-media_discovery = types.ModuleType("skeleton_media.cast.media_discovery")
-media_discovery.DB = Path("/tmp/skeleton-media-monitor-test.sqlite3")
-media_discovery.is_trailer_source = lambda source: bool(source.get("kind") == "trailer")
-media_discovery._get = lambda *args, **kwargs: None
-sys.modules["skeleton_media.cast.media_discovery"] = media_discovery
+from skeleton_media.cast import media_discovery
 from skeleton_media.cast import media_release_monitor as monitor
 
 
