@@ -3,26 +3,54 @@ from __future__ import annotations
 import sqlite3
 import sys
 import types
+import importlib
 from pathlib import Path
 
 import pytest
 
-bs4 = types.ModuleType("bs4")
-bs4.BeautifulSoup = lambda *args, **kwargs: None
-sys.modules.setdefault("bs4", bs4)
-
-media_discovery = types.ModuleType("skeleton_media.cast.media_discovery")
-media_discovery.DB = Path("/tmp/skeleton-media-monitor-test.sqlite3")
-media_discovery.is_trailer_source = lambda source: bool(source.get("kind") == "trailer")
-media_discovery._get = lambda *args, **kwargs: None
-sys.modules["skeleton_media.cast.media_discovery"] = media_discovery
-from skeleton_media.cast import media_release_monitor as monitor
+_MISSING = object()
 
 
 @pytest.fixture()
-def synthetic_monitor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def monitor(monkeypatch: pytest.MonkeyPatch):
+    bs4 = types.ModuleType("bs4")
+    bs4.BeautifulSoup = lambda *args, **kwargs: None
+
+    media_discovery = types.ModuleType("skeleton_media.cast.media_discovery")
+    media_discovery.DB = Path("/tmp/skeleton-media-monitor-test.sqlite3")
+    media_discovery.is_trailer_source = lambda source: bool(source.get("kind") == "trailer")
+    media_discovery._get = lambda *args, **kwargs: None
+
+    import skeleton_media.cast as cast_package
+
+    monitor_name = "skeleton_media.cast.media_release_monitor"
+    prior_monitor = sys.modules.pop(monitor_name, _MISSING)
+    prior_monitor_attr = getattr(cast_package, "media_release_monitor", _MISSING)
+    if prior_monitor_attr is not _MISSING:
+        delattr(cast_package, "media_release_monitor")
+
+    monkeypatch.setitem(sys.modules, "bs4", bs4)
+    monkeypatch.setitem(sys.modules, "skeleton_media.cast.media_discovery", media_discovery)
+    monkeypatch.setattr(cast_package, "media_discovery", media_discovery, raising=False)
+
+    module = importlib.import_module(monitor_name)
+    try:
+        yield module
+    finally:
+        if sys.modules.get(monitor_name) is module:
+            sys.modules.pop(monitor_name, None)
+        if prior_monitor is not _MISSING:
+            sys.modules[monitor_name] = prior_monitor
+        if getattr(cast_package, "media_release_monitor", _MISSING) is module:
+            delattr(cast_package, "media_release_monitor")
+        if prior_monitor_attr is not _MISSING:
+            setattr(cast_package, "media_release_monitor", prior_monitor_attr)
+
+
+@pytest.fixture()
+def synthetic_monitor(monitor, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     db = tmp_path / "media-catalog.sqlite3"
-    monkeypatch.setattr(media_discovery, "DB", db)
+    monkeypatch.setattr(monitor.media_discovery, "DB", db)
     monkeypatch.setattr(monitor, "DB", db)
     monkeypatch.setattr(monitor.time, "time", lambda: 1_800_000_000)
     with sqlite3.connect(db) as con:
@@ -91,7 +119,7 @@ def _snap(status: str, release_key: str, season: int, episode: int) -> dict:
 
 
 def test_effective_subscription_requires_explicit_on_and_series(
-    synthetic_monitor: Path, monkeypatch: pytest.MonkeyPatch
+    synthetic_monitor: Path, monitor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(monitor, "tmdb_release_snapshot", lambda tmdb_id: _snap("Returning Series", "S01E01", 1, 1))
 
@@ -107,7 +135,7 @@ def test_effective_subscription_requires_explicit_on_and_series(
 
 
 def test_tmdb_terminal_update_does_not_replace_already_waiting_localization(
-    synthetic_monitor: Path, monkeypatch: pytest.MonkeyPatch
+    synthetic_monitor: Path, monitor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     snapshots = iter(
         (
@@ -144,7 +172,7 @@ def test_tmdb_terminal_update_does_not_replace_already_waiting_localization(
 
 
 def test_notification_intent_is_claimed_once_until_ack(
-    synthetic_monitor: Path, monkeypatch: pytest.MonkeyPatch
+    synthetic_monitor: Path, monitor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(monitor, "tmdb_release_snapshot", lambda tmdb_id: _snap("Returning Series", "S01E01", 1, 1))
     monitor.set_for_job(_job(), True)
