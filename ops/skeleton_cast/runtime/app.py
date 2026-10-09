@@ -201,22 +201,22 @@ def _endpoint_history_store_path() -> Path:
     return Path(getattr(player, 'WATCH_HISTORY_ENDPOINTS', WATCH_HISTORY_ENDPOINTS))
 
 
-def _endpoint_history_file_signature(path: Path | None = None) -> tuple[str, bool, int | None, int | None]:
+def _endpoint_history_file_signature(path: Path | None = None) -> tuple[str, bool, int | None, int | None, int | None, int | None]:
     path = Path(path or _endpoint_history_store_path())
     try:
         stat = path.stat()
-        return (str(path), True, stat.st_mtime_ns, stat.st_size)
+        return (str(path), True, stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
     except FileNotFoundError:
-        return (str(path), False, None, None)
+        return (str(path), False, None, None, None, None)
     except Exception:
-        return (str(path), False, None, None)
+        return (str(path), False, None, None, None, None)
 
 
 def _copy_history_store(store: dict) -> dict:
     return copy.deepcopy(store)
 
 
-def _endpoint_history_cache_get(signature: tuple[str, bool, int | None, int | None]) -> dict | None:
+def _endpoint_history_cache_get(signature: tuple[str, bool, int | None, int | None, int | None, int | None]) -> dict | None:
     with _ENDPOINT_HISTORY_CACHE_LOCK:
         if (
             _ENDPOINT_HISTORY_CACHE.get('signature') == signature
@@ -226,7 +226,7 @@ def _endpoint_history_cache_get(signature: tuple[str, bool, int | None, int | No
     return None
 
 
-def _endpoint_history_cache_set(signature: tuple[str, bool, int | None, int | None], store: dict) -> None:
+def _endpoint_history_cache_set(signature: tuple[str, bool, int | None, int | None, int | None, int | None], store: dict) -> None:
     with _ENDPOINT_HISTORY_CACHE_LOCK:
         _ENDPOINT_HISTORY_CACHE['path'] = signature[0]
         _ENDPOINT_HISTORY_CACHE['signature'] = signature
@@ -250,12 +250,20 @@ def _load_endpoint_history_store() -> dict:
     if callable(loader):
         store = loader()
         if isinstance(store, dict):
-            _endpoint_history_cache_set(_endpoint_history_file_signature(path), store)
+            # Another process may replace the file after the loader reads it.
+            # Never bind old contents to the replacement file's signature.
+            if _endpoint_history_file_signature(path) == signature:
+                _endpoint_history_cache_set(signature, store)
+            else:
+                _endpoint_history_cache_clear()
             return _copy_history_store(store)
         return {}
     store = _read_json(WATCH_HISTORY_ENDPOINTS)
     if store.get('schema') == WATCH_HISTORY_ENDPOINT_SCHEMA and isinstance(store.get('histories'), dict):
-        _endpoint_history_cache_set(signature, store)
+        if _endpoint_history_file_signature(path) == signature:
+            _endpoint_history_cache_set(signature, store)
+        else:
+            _endpoint_history_cache_clear()
         return _copy_history_store(store)
     legacy = _read_json(WATCH_HISTORY_LEGACY)
     legacy_items = _history_items_from_payload(legacy) if legacy.get('schema') == WATCH_HISTORY_LEGACY_SCHEMA else []
