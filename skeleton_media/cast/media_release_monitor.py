@@ -94,6 +94,9 @@ def _source_max(job:dict[str,Any])->tuple[int,int]:
 def _has_full_source(job:dict[str,Any])->bool:
     return any(isinstance(s,dict) and not media_discovery.is_trailer_source(s) for s in (job.get('sources') or []))
 
+def _effectively_enabled(row:dict[str,Any])->bool:
+    return bool(row.get('enabled')) and str(row.get('explicit_override') or '').upper() == 'ON' and str(row.get('media_type') or '').lower() == 'tv'
+
 def tmdb_release_snapshot(tmdb_id:int)->dict[str,Any]:
     response=media_discovery._get(f'https://www.themoviedb.org/tv/{int(tmdb_id)}?language=en-US',timeout=30)
     soup=BeautifulSoup(response.text,'lxml'); text=' '.join(soup.get_text(' ',strip=True).split())
@@ -111,7 +114,7 @@ def tmdb_release_snapshot(tmdb_id:int)->dict[str,Any]:
 
 def state_for_job(job:dict[str,Any])->dict[str,Any]:
     meta=_identity(job); row=_get(meta['media_uid'])
-    return {'schema':SCHEMA,'media_uid':meta['media_uid'],'tmdb_id':meta['tmdb_id'],'media_type':meta['media_type'],'title':meta['title'],'enabled':bool(row.get('enabled',0)),'state':row.get('state') or 'OFF','title_status':row.get('title_status') or '', 'pending_release_key':row.get('pending_release_key') or '', 'notified_release_key':row.get('notified_release_key') or '', 'schedule_id':schedule_id(meta['media_uid'])}
+    return {'schema':SCHEMA,'media_uid':meta['media_uid'],'tmdb_id':meta['tmdb_id'],'media_type':meta['media_type'],'title':meta['title'],'enabled':_effectively_enabled(row),'state':row.get('state') or 'OFF','title_status':row.get('title_status') or '', 'pending_release_key':row.get('pending_release_key') or '', 'notified_release_key':row.get('notified_release_key') or '', 'schedule_id':schedule_id(meta['media_uid'])}
 
 def set_for_job(job:dict[str,Any],enabled:bool)->dict[str,Any]:
     ensure_schema(); meta=_identity(job); now=int(time.time()); old=_get(meta['media_uid'])
@@ -154,7 +157,7 @@ def schedules()->list[dict[str,Any]]:
     ensure_schema(); out=[]
     with _con() as con: rows=con.execute('SELECT * FROM media_release_monitors ORDER BY media_uid').fetchall()
     for r in rows:
-        d=_row(r); enabled=bool(d.get('enabled')) and str(d.get('explicit_override') or '').upper() == 'ON' and str(d.get('media_type') or '').lower() == 'tv'; pending=enabled and bool(d.get('pending_release_key')) and d.get('state') not in {'NOTIFIED','OFF'}; terminal=str(d.get('title_status') or '').lower() in {'ended','canceled'} and not pending
+        d=_row(r); enabled=_effectively_enabled(d); pending=enabled and bool(d.get('pending_release_key')) and d.get('state') not in {'NOTIFIED','OFF'}; terminal=str(d.get('title_status') or '').lower() in {'ended','canceled'} and not pending
         cron='17 */6 * * *' if pending else ('31 5 * * 1' if terminal else '23 5 * * *')
         out.append({'schedule_id':schedule_id(str(d['media_uid'])),'media_uid':str(d['media_uid']),'enabled':enabled,'cron_expression':cron,'state':str(d.get('state') or ''),'media_type':str(d.get('media_type') or '')})
     return out
@@ -167,7 +170,7 @@ def tick(media_uid:str,occurrence_id:str,localization_probe:Callable[[dict[str,A
         try:
             snap=tmdb_release_snapshot(int(row['tmdb_id'])); changed['last_release_check']=now; changed['title_status']=snap.get('status') or row.get('title_status') or ''; latest=str(snap.get('release_key') or ''); baseline=str(row.get('baseline_release_key') or '')
             if latest and not baseline: changed.update({'baseline_release_key':latest,'baseline_season':snap.get('season'),'baseline_episode':snap.get('episode'),'baseline_air_date':snap.get('air_date'),'state':'MONITORED'})
-            elif latest and _release_tuple(latest)>_release_tuple(baseline) and latest!=str(row.get('notified_release_key') or ''):
+            elif latest and not str(row.get('pending_release_key') or '') and _release_tuple(latest)>_release_tuple(baseline) and latest!=str(row.get('notified_release_key') or ''):
                 air=str(snap.get('air_date') or ''); due=True
                 if air:
                     try: due=dt.date.fromisoformat(air)<=today
