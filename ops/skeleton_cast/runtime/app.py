@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import math
@@ -79,6 +80,8 @@ WATCH_HISTORY_ENDPOINTS = STATE / 'watch-history-endpoints.json'
 WATCH_HISTORY_LEGACY_SCHEMA = 'skeleton.media.watch_history.v2'
 WATCH_HISTORY_ENDPOINT_SCHEMA = 'skeleton.media.endpoint_watch_history.v1'
 _ENDPOINT_HISTORY_LOCK = getattr(player, 'ENDPOINT_HISTORY_LOCK', threading.RLock())
+_ENDPOINT_HISTORY_CACHE_LOCK = threading.RLock()
+_ENDPOINT_HISTORY_CACHE: dict[str, object] = {'path': None, 'signature': None, 'store': None}
 HOME_EDGE_TV_HISTORY_ID = 'home_edge_tv'
 SAMSUNG_DEVICE_ID = 'samsung_kiosk'
 TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
@@ -194,24 +197,80 @@ def _history_default(legacy_items: list[dict] | None = None) -> dict:
     }
 
 
+def _endpoint_history_store_path() -> Path:
+    return Path(getattr(player, 'WATCH_HISTORY_ENDPOINTS', WATCH_HISTORY_ENDPOINTS))
+
+
+def _endpoint_history_file_signature(path: Path | None = None) -> tuple[str, bool, int | None, int | None]:
+    path = Path(path or _endpoint_history_store_path())
+    try:
+        stat = path.stat()
+        return (str(path), True, stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        return (str(path), False, None, None)
+    except Exception:
+        return (str(path), False, None, None)
+
+
+def _copy_history_store(store: dict) -> dict:
+    return copy.deepcopy(store)
+
+
+def _endpoint_history_cache_get(signature: tuple[str, bool, int | None, int | None]) -> dict | None:
+    with _ENDPOINT_HISTORY_CACHE_LOCK:
+        if (
+            _ENDPOINT_HISTORY_CACHE.get('signature') == signature
+            and isinstance(_ENDPOINT_HISTORY_CACHE.get('store'), dict)
+        ):
+            return _copy_history_store(_ENDPOINT_HISTORY_CACHE['store'])
+    return None
+
+
+def _endpoint_history_cache_set(signature: tuple[str, bool, int | None, int | None], store: dict) -> None:
+    with _ENDPOINT_HISTORY_CACHE_LOCK:
+        _ENDPOINT_HISTORY_CACHE['path'] = signature[0]
+        _ENDPOINT_HISTORY_CACHE['signature'] = signature
+        _ENDPOINT_HISTORY_CACHE['store'] = _copy_history_store(store)
+
+
+def _endpoint_history_cache_clear() -> None:
+    with _ENDPOINT_HISTORY_CACHE_LOCK:
+        _ENDPOINT_HISTORY_CACHE['path'] = None
+        _ENDPOINT_HISTORY_CACHE['signature'] = None
+        _ENDPOINT_HISTORY_CACHE['store'] = None
+
+
 def _load_endpoint_history_store() -> dict:
+    path = _endpoint_history_store_path()
+    signature = _endpoint_history_file_signature(path)
+    cached = _endpoint_history_cache_get(signature)
+    if cached is not None:
+        return cached
     loader = getattr(player, '_load_endpoint_watch_history', None)
     if callable(loader):
-        return loader()
+        store = loader()
+        if isinstance(store, dict):
+            _endpoint_history_cache_set(_endpoint_history_file_signature(path), store)
+            return _copy_history_store(store)
+        return {}
     store = _read_json(WATCH_HISTORY_ENDPOINTS)
     if store.get('schema') == WATCH_HISTORY_ENDPOINT_SCHEMA and isinstance(store.get('histories'), dict):
-        return store
+        _endpoint_history_cache_set(signature, store)
+        return _copy_history_store(store)
     legacy = _read_json(WATCH_HISTORY_LEGACY)
     legacy_items = _history_items_from_payload(legacy) if legacy.get('schema') == WATCH_HISTORY_LEGACY_SCHEMA else []
     store = _history_default(legacy_items)
     _atomic(WATCH_HISTORY_ENDPOINTS, store)
-    return store
+    _endpoint_history_cache_set(_endpoint_history_file_signature(path), store)
+    return _copy_history_store(store)
 
 
 def _save_endpoint_history_store(store: dict) -> dict:
+    _endpoint_history_cache_clear()
     saver = getattr(player, '_write_endpoint_watch_history', None)
     if callable(saver):
         saver(store)
+        _endpoint_history_cache_clear()
         return store
     store['schema'] = WATCH_HISTORY_ENDPOINT_SCHEMA
     store['version'] = int(store.get('version') or 1)
@@ -220,6 +279,7 @@ def _save_endpoint_history_store(store: dict) -> dict:
     if not isinstance(histories, dict):
         store['histories'] = {}
     _atomic(WATCH_HISTORY_ENDPOINTS, store)
+    _endpoint_history_cache_clear()
     return store
 
 
