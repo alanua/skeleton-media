@@ -161,3 +161,36 @@ def test_authenticated_poster_route_still_requires_access_on_every_request(monke
     assert first.data == b"synthetic-poster"
     assert second.data == b"synthetic-poster"
     assert require_calls == 2
+
+
+def test_external_atomic_replace_during_loader_does_not_pin_stale_history(monkeypatch, tmp_path: Path) -> None:
+    """A concurrent writer must never make the old snapshot cache as the new file."""
+    backend = _install_counting_backend(
+        monkeypatch, tmp_path, _store(tv_items=[_item("old-entry", position=10.0)])
+    )
+    original_load = backend._load_endpoint_watch_history
+
+    def replace_after_read() -> dict:
+        snapshot = original_load()
+        replacement = backend.WATCH_HISTORY_ENDPOINTS.with_name("replacement-history.json")
+        replacement.write_text(
+            json.dumps(_store(tv_items=[_item("new-entry", position=20.0)])),
+            encoding="utf-8",
+        )
+        replacement.replace(backend.WATCH_HISTORY_ENDPOINTS)
+        return snapshot
+
+    monkeypatch.setattr(backend, "_load_endpoint_watch_history", replace_after_read)
+    first = cast_app._load_endpoint_history_store()
+    assert [item["history_key"] for item in first["histories"]["home_edge_tv"]["items"]] == [
+        "old-entry"
+    ]
+
+    # The external file was atomically replaced while the first loader was returning.
+    # A subsequent independent read must see the new file, not a stale cache hit.
+    monkeypatch.setattr(backend, "_load_endpoint_watch_history", original_load)
+    second = cast_app._load_endpoint_history_store()
+    assert [item["history_key"] for item in second["histories"]["home_edge_tv"]["items"]] == [
+        "new-entry"
+    ]
+    assert backend.load_calls == 2
