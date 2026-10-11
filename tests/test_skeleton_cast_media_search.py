@@ -354,3 +354,48 @@ def test_provider_no_result_and_temporarily_unavailable_are_distinct_states() ->
     assert unavailable.status == "error"
     assert unavailable.message == "Джерела не відповіли"
     assert unavailable.provider_outcomes == (media_search.ProviderOutcome("provider-failed", "failed", 0),)
+
+
+def test_partial_failure_without_sources_is_unavailable_and_episode_ids_stay_distinct() -> None:
+    request = media_search.MediaSearchRequest(media_search.MediaIdentity("Anthology Synthetic", 2024))
+
+    incomplete = media_search.search_media_sources(
+        request,
+        (StaticProvider("provider-empty", ()), FailingProvider()),
+    )
+
+    assert incomplete.status == "error"
+    assert incomplete.message == "Джерела не відповіли"
+    assert incomplete.provider_outcomes == (
+        media_search.ProviderOutcome("provider-empty", "ok", 0),
+        media_search.ProviderOutcome("provider-failed", "failed", 0),
+    )
+
+    first = media_search._candidate_from_mapping(
+        "episode-index",
+        {
+            "kind": "release",
+            "title": "Anthology Synthetic",
+            "url": "https://cdn.example/shared.m3u8",
+            "season": 1,
+            "episode": 1,
+        },
+    )
+    second = media_search._candidate_from_mapping(
+        "episode-index",
+        {
+            "kind": "release",
+            "title": "Anthology Synthetic",
+            "url": "https://cdn.example/shared.m3u8",
+            "season": 1,
+            "episode": 2,
+        },
+    )
+
+    distinct = media_search.search_media_sources(
+        request,
+        (StaticProvider("episode-index", (first, second)),),
+    )
+
+    assert [candidate.source_id for candidate in distinct.candidates] == [first.source_id, second.source_id]
+    assert len({candidate.source_id for candidate in distinct.candidates}) == 2
