@@ -57,6 +57,15 @@ class SlowProvider:
         return ()
 
 
+class FailingProvider:
+    provider_id = "provider-failed"
+    timeout_seconds = 0.1
+
+    def search(self, request: media_search.MediaSearchRequest):
+        del request
+        raise RuntimeError("synthetic provider unavailable")
+
+
 def _release(
     provider_id: str = "provider-b",
     source_id: str = "release-1",
@@ -66,6 +75,8 @@ def _release(
     translation: str = "Українська",
     audio_tracks: tuple[str, ...] = ("uk",),
     subtitles: tuple[str, ...] = ("uk",),
+    season: int = 2,
+    episode: int = 5,
     order: int = 0,
 ) -> media_search.SourceCandidate:
     return media_search.SourceCandidate(
@@ -78,8 +89,8 @@ def _release(
         translation=translation,
         audio_tracks=audio_tracks,
         subtitles=subtitles,
-        season=2,
-        episode=5,
+        season=season,
+        episode=episode,
         height=1080,
         order=order,
     )
@@ -278,3 +289,68 @@ def test_dedupe_normalizes_equivalent_release_urls_deterministically() -> None:
     )
 
     assert [candidate.source_id for candidate in result.candidates] == ["preferred"]
+
+
+def test_public_payload_keeps_selected_work_query_for_stale_response_rejection() -> None:
+    first_request = media_search.MediaSearchRequest(media_search.MediaIdentity("Earlier Synthetic Show", 2024, 1, 1))
+    latest_request = media_search.MediaSearchRequest(media_search.MediaIdentity("Latest Synthetic Show", 2024, 3, 7))
+
+    stale_result = media_search.search_media_sources(
+        first_request,
+        (StaticProvider("provider-a", (_release("provider-a", "earlier", season=1, episode=1),)),),
+    )
+    latest_result = media_search.search_media_sources(
+        latest_request,
+        (StaticProvider("provider-a", (_release("provider-a", "latest", season=3, episode=7),)),),
+    )
+
+    stale_payload = media_search.public_result_payload(stale_result)
+    latest_payload = media_search.public_result_payload(latest_result)
+
+    assert stale_payload["query"] == "Earlier Synthetic Show 2024 S01E01"
+    assert latest_payload["query"] == "Latest Synthetic Show 2024 S03E07"
+    assert stale_payload["query"] != latest_payload["query"]
+    assert [source["source_id"] for source in latest_payload["sources"]] == ["latest"]
+    assert all("url" not in source for source in stale_payload["sources"] + latest_payload["sources"])
+
+
+def test_distinct_season_and_episode_releases_do_not_collapse() -> None:
+    request = media_search.MediaSearchRequest(media_search.MediaIdentity("Anthology Synthetic", 2024))
+    season_one = _release("provider-a", "season-one", source_url="https://cdn.example/shared.m3u8", season=1, episode=1)
+    season_two = _release("provider-a", "season-two", source_url="https://cdn.example/shared.m3u8", season=2, episode=1, order=1)
+    later_episode = _release(
+        "provider-a",
+        "later-episode",
+        source_url="https://cdn.example/shared.m3u8",
+        season=2,
+        episode=2,
+        order=2,
+    )
+
+    result = media_search.search_media_sources(
+        request,
+        (StaticProvider("provider-a", (season_one, season_two, later_episode)),),
+    )
+
+    assert [candidate.source_id for candidate in result.candidates] == ["season-one", "season-two", "later-episode"]
+    assert result.facets.seasons == (1, 2)
+    assert result.facets.episodes == (1, 2)
+    assert [media_search.source_to_job_source(candidate)["episode"] for candidate in result.candidates] == [
+        "S01E01",
+        "S02E01",
+        "S02E02",
+    ]
+
+
+def test_provider_no_result_and_temporarily_unavailable_are_distinct_states() -> None:
+    request = media_search.MediaSearchRequest(media_search.MediaIdentity("Missing Synthetic Show", 2024))
+
+    no_result = media_search.search_media_sources(request, (StaticProvider("provider-empty", ()),))
+    unavailable = media_search.search_media_sources(request, (FailingProvider(),))
+
+    assert no_result.status == "empty"
+    assert no_result.message == "Реліз не знайдено"
+    assert no_result.provider_outcomes == (media_search.ProviderOutcome("provider-empty", "ok", 0),)
+    assert unavailable.status == "error"
+    assert unavailable.message == "Джерела не відповіли"
+    assert unavailable.provider_outcomes == (media_search.ProviderOutcome("provider-failed", "failed", 0),)
