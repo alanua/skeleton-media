@@ -291,7 +291,7 @@ def test_dedupe_normalizes_equivalent_release_urls_deterministically() -> None:
     assert [candidate.source_id for candidate in result.candidates] == ["preferred"]
 
 
-def test_public_payload_keeps_selected_work_query_for_stale_response_rejection() -> None:
+def test_public_payload_exposes_query_identity_to_distinguish_stale_responses() -> None:
     first_request = media_search.MediaSearchRequest(media_search.MediaIdentity("Earlier Synthetic Show", 2024, 1, 1))
     latest_request = media_search.MediaSearchRequest(media_search.MediaIdentity("Latest Synthetic Show", 2024, 3, 7))
 
