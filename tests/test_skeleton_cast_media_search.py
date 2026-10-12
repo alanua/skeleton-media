@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import time
 from pathlib import Path
@@ -64,6 +65,17 @@ class FailingProvider:
     def search(self, request: media_search.MediaSearchRequest):
         del request
         raise RuntimeError("synthetic provider unavailable")
+
+
+def _historic_fallback_source_id(
+    provider_id: str,
+    kind: media_search.CandidateKind,
+    source_url: str | None,
+    page_url: str | None,
+    title: str,
+) -> str:
+    seed = "|".join([provider_id, kind.value, source_url or "", page_url or "", title])
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
 def _release(
@@ -255,6 +267,124 @@ def test_json_and_html_release_backends_can_contribute_through_canonical_abstrac
     assert all(candidate.kind == media_search.CandidateKind.RELEASE for candidate in result.candidates)
 
 
+def test_non_episodic_fallback_source_id_keeps_historic_five_field_hash() -> None:
+    payload = {
+        "kind": "release",
+        "title": "Catalog Movie",
+        "url": "https://cdn.example/catalog-movie.m3u8",
+        "page_url": "https://catalog.example/catalog-movie",
+        "quality": "1080p",
+    }
+    provider = media_search.JsonReleaseSearchProvider(
+        "catalog-index",
+        "https://search.example/json?q={query}",
+        timeout_seconds=0.2,
+        session=FakeSession(
+            FakeResponse(
+                url="https://search.example/json",
+                payload={"candidates": [payload]},
+            )
+        ),
+    )
+
+    result = media_search.search_media_sources(
+        media_search.MediaSearchRequest(media_search.MediaIdentity("Catalog Movie", 2024)),
+        (provider,),
+    )
+
+    assert [candidate.source_id for candidate in result.candidates] == [
+        _historic_fallback_source_id(
+            "catalog-index",
+            media_search.CandidateKind.RELEASE,
+            "https://cdn.example/catalog-movie.m3u8",
+            "https://catalog.example/catalog-movie",
+            "Catalog Movie",
+        )
+    ]
+
+
+def test_explicit_source_id_from_source_payload_is_preserved_for_episodic_release() -> None:
+    provider = media_search.JsonReleaseSearchProvider(
+        "episodic-index",
+        "https://search.example/json?q={query}",
+        timeout_seconds=0.2,
+        session=FakeSession(
+            FakeResponse(
+                url="https://search.example/json",
+                payload={
+                    "candidates": [
+                        {
+                            "source_id": "provider-stable-s02e05",
+                            "kind": "release",
+                            "title": "Known Show",
+                            "url": "https://cdn.example/show.m3u8",
+                            "season": 2,
+                            "episode": 5,
+                        }
+                    ]
+                },
+            )
+        ),
+    )
+
+    result = media_search.search_media_sources(
+        media_search.MediaSearchRequest(media_search.MediaIdentity("Known Show", 2024, 2, 5)),
+        (provider,),
+    )
+
+    assert [candidate.source_id for candidate in result.candidates] == ["provider-stable-s02e05"]
+
+
+def test_generated_episodic_source_ids_include_keyed_suffix_without_empty_movie_placeholders() -> None:
+    provider = media_search.JsonReleaseSearchProvider(
+        "episodic-index",
+        "https://search.example/json?q={query}",
+        timeout_seconds=0.2,
+        session=FakeSession(
+            FakeResponse(
+                url="https://search.example/json",
+                payload={
+                    "candidates": [
+                        {
+                            "kind": "release",
+                            "title": "Shared Episode Title",
+                            "url": "https://cdn.example/shared-episode.m3u8",
+                            "season": 1,
+                            "episode": 1,
+                            "order": 1,
+                        },
+                        {
+                            "kind": "release",
+                            "title": "Shared Episode Title",
+                            "url": "https://cdn.example/shared-episode.m3u8",
+                            "season": 1,
+                            "episode": 2,
+                            "order": 2,
+                        },
+                    ]
+                },
+            )
+        ),
+    )
+    historic_id = _historic_fallback_source_id(
+        "episodic-index",
+        media_search.CandidateKind.RELEASE,
+        "https://cdn.example/shared-episode.m3u8",
+        None,
+        "Shared Episode Title",
+    )
+
+    result = media_search.search_media_sources(
+        media_search.MediaSearchRequest(media_search.MediaIdentity("Known Show", 2024)),
+        (provider,),
+    )
+
+    assert [candidate.source_id for candidate in result.candidates] == [
+        f"{historic_id}:s=1:e=1",
+        f"{historic_id}:s=1:e=2",
+    ]
+
+
 def test_environment_provider_config_supports_independent_json_and_html_backends() -> None:
     providers = media_search.providers_from_environment(
         resolve_page=lambda url: {"title": url, "sources": []},
@@ -354,3 +484,43 @@ def test_provider_no_result_and_temporarily_unavailable_are_distinct_states() ->
     assert unavailable.status == "error"
     assert unavailable.message == "Джерела не відповіли"
     assert unavailable.provider_outcomes == (media_search.ProviderOutcome("provider-failed", "failed", 0),)
+
+
+def test_mixed_empty_and_failed_providers_without_playable_candidates_returns_no_responses() -> None:
+    request = media_search.MediaSearchRequest(media_search.MediaIdentity("Missing Synthetic Show", 2024))
+
+    result = media_search.search_media_sources(
+        request,
+        (
+            StaticProvider("provider-empty", ()),
+            FailingProvider(),
+        ),
+    )
+
+    assert result.status == "error"
+    assert result.message == "Джерела не відповіли"
+    assert result.candidates == ()
+    assert result.provider_outcomes == (
+        media_search.ProviderOutcome("provider-empty", "ok", 0),
+        media_search.ProviderOutcome("provider-failed", "failed", 0),
+    )
+
+
+def test_all_ok_empty_providers_without_playable_candidates_returns_no_release() -> None:
+    request = media_search.MediaSearchRequest(media_search.MediaIdentity("Missing Synthetic Show", 2024))
+
+    result = media_search.search_media_sources(
+        request,
+        (
+            StaticProvider("provider-empty-a", ()),
+            StaticProvider("provider-empty-b", ()),
+        ),
+    )
+
+    assert result.status == "empty"
+    assert result.message == "Реліз не знайдено"
+    assert result.candidates == ()
+    assert result.provider_outcomes == (
+        media_search.ProviderOutcome("provider-empty-a", "ok", 0),
+        media_search.ProviderOutcome("provider-empty-b", "ok", 0),
+    )

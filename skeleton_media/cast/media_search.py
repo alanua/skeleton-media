@@ -342,7 +342,7 @@ def search_media_sources(
     playable = tuple(candidate for candidate in normalized if candidate.playable)
     if playable:
         return _result("ready", None, query, playable, tuple(outcomes))
-    if outcomes and all(outcome.status in {"timeout", "failed", "circuit_open"} for outcome in outcomes):
+    if any(outcome.status in {"timeout", "failed", "circuit_open"} for outcome in outcomes):
         return _result("error", NO_RESPONSES_UK, query, (), tuple(outcomes))
     return _result("empty", NO_RELEASE_UK, query, (), tuple(outcomes))
 
@@ -439,18 +439,24 @@ def _candidate_from_mapping(provider_id: str, item: dict[str, Any]) -> SourceCan
     source_url = _optional_str(item.get("source_url") or item.get("url"))
     page_url = _optional_str(item.get("page_url"))
     title = _optional_str(item.get("title")) or "Реліз"
+    season = _optional_int(item.get("season"))
+    episode = _optional_int(item.get("episode"))
     seed = "|".join([provider_id, kind.value, source_url or "", page_url or "", title])
+    fallback_source_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16] + _source_id_episode_suffix(
+        season=season,
+        episode=episode,
+    )
     return SourceCandidate(
         provider_id=provider_id,
-        source_id=_optional_str(item.get("source_id")) or hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16],
+        source_id=_optional_str(item.get("source_id")) or fallback_source_id,
         kind=kind,
         title=title,
         quality=_optional_str(item.get("quality")),
         translation=_optional_str(item.get("translation") or item.get("voice") or item.get("group")),
         audio_tracks=tuple(str(value).strip() for value in item.get("audio_tracks") or () if str(value).strip()),
         subtitles=tuple(str(value).strip() for value in item.get("subtitles") or () if str(value).strip()),
-        season=_optional_int(item.get("season")),
-        episode=_optional_int(item.get("episode")),
+        season=season,
+        episode=episode,
         page_url=page_url,
         source_url=source_url,
         headers={str(k): str(v) for k, v in dict(item.get("headers") or {}).items() if str(k) and str(v)},
@@ -536,6 +542,15 @@ def _identity_key(identity: MediaIdentity) -> str:
             str(identity.episode or ""),
         ]
     )
+
+
+def _source_id_episode_suffix(*, season: int | None, episode: int | None) -> str:
+    parts = []
+    if season is not None:
+        parts.append(f"s={season}")
+    if episode is not None:
+        parts.append(f"e={episode}")
+    return f":{':'.join(parts)}" if parts else ""
 
 
 def _clean_provider_id(provider_id: str) -> str:
