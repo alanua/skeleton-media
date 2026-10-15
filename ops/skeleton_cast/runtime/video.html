@@ -217,7 +217,16 @@ async function loadJob(preferred={}){
       return;
     }
     if(['error','provider_error'].includes(j.status)){
-      message(j.error||'Джерело тимчасово недоступне',true);renderCatalog(j,j.error||'Джерело тимчасово недоступне');
+      // A terminal resolver failure must stay visible. The regular notice toast
+      // disappears after 4.5 seconds and makes a failed job look like a live search.
+      sources=[];
+      const failure=j.error||'Джерело тимчасово недоступне';
+      const guidance=j.error_type==='origin_protected'
+        ? ' Повторіть пошук не раніше ніж за годину або оберіть інше джерело.'
+        : '';
+      message(failure+guidance,true);
+      clearTimeout(noticeTimer);
+      renderCatalog(j,failure+guidance);
       return;
     }
     sources=(j.sources||[]).sort((a,b)=>Number(isTrailer(a))-Number(isTrailer(b))||(Number(b.height)||0)-(Number(a.height)||0));
