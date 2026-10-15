@@ -1225,6 +1225,12 @@ def _candidate_content_compatible(meta: dict[str, Any], item: dict[str, Any]) ->
         if len(target_tokens) == 1 and candidate_key and target_tokens[0] not in candidate_tokens:
             if not _localized_single_token_match(meta, str(item.get('title') or '')):
                 return False
+        # A playable release must identify this work, not just be the same media type.
+        # In particular a multi-token TV title used to accept unrelated shows when
+        # search relevance was low but the unrelated page had a working player.
+        # Use all verified localized aliases; release availability does not prove identity.
+        if not _strong_title_identity(meta, str(item.get('title') or '')):
+            return False
     return True
 
 
