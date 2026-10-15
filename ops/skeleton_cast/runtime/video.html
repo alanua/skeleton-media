@@ -181,9 +181,17 @@ function renderCatalog(j={},statusText=''){
   const c=j?.catalog||{},url=String(j?.page_url||$('url')?.value||''),host=sourceHost(url),card=$('catalogCard'),img=$('catalogPoster');
   const title=String(c.title||usefulTitle(j?.title)||host||'Відео').trim();
   const type=contentTypeLabel(c.content_type||j?.content_type,c.media_type||j?.history_media_type);
-  const meta=[type,c.year,metadataRuntimeLabel(c)].filter(Boolean).join(' · ');
+  const catalogSeasons=Array.isArray(c.seasons)?c.seasons:[];
+  const knownEpisodes=catalogSeasons.reduce((sum,item)=>sum+Math.max(0,Number(item?.episode_count)||0),0);
+  const unavailable=['no_verified_sources','error','provider_error'].includes(String(j?.status||''));
+  const episodeInfo=unavailable&&knownEpisodes
+    ? catalogSeasons.length+' сезон(ів), '+knownEpisodes+' епізодів — джерела недоступні'
+    : '';
+  const meta=[type,c.year,metadataRuntimeLabel(c),episodeInfo].filter(Boolean).join(' · ');
   const fallback=statusText||j?.error||(url?'':'Оберіть твір з історії або надішліть його через «Поділитися».');
-  const overview=String(c.overview||j?.overview||j?.description||fallback||'').trim();
+  const description=String(c.overview||j?.overview||j?.description||'').trim();
+  // An unavailable-stream status must not be hidden by a nonempty TMDB overview.
+  const overview=(unavailable ? [fallback,description].filter(Boolean).join(' — ') : (description||fallback)).trim();
   const poster=selectedSeasonPoster(j);
   setAmbientPoster(poster);
   card.hidden=false;card.classList.toggle('no-poster',!poster);
