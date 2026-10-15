@@ -44,7 +44,7 @@ def test_reject_unrelated_series_with_similar_search_ranking() -> None:
 
 def test_accept_localized_correct_1987_anime() -> None:
     correct = _row(
-        "Щоденна криза (8 серій) українською",
+        "Щоденна криза",
         "https://anitube.in.ua/4556-schodenna-kriza.html",
         1987,
     )
