@@ -1214,16 +1214,18 @@ def _candidate_content_compatible(meta: dict[str, Any], item: dict[str, Any]) ->
                 return False
     if target_type == 'tv':
         target_key = _history_title_key(meta.get('title', ''))
-        # Indexed pages append display-only words such as "(8 серій) українською"
-        # or "онлайн". Remove those decorations for title comparisons only;
-        # do not discard real suffixes such as "Tokyo 2040" or a spin-off name.
+        # Ignore presentation-only descriptors, never franchise/spin-off names.
         candidate_display = str(item.get('title') or '')
         candidate_display = re.sub(
-            r'\\s*\\(\\s*\\d+\\s*(?:серій|серії|episodes?)\\s*\\)', '',
+            r'\s*\(\s*\d+\s*(?:серій|серії|episodes?)\s*\)', '',
             candidate_display, flags=re.I,
         )
         candidate_display = re.sub(
-            r'\\s+(?:українською|російською)(?:\\s+онлайн)?\\s*
+            r'\s+(?:українською|російською)(?:\s+онлайн)?\s*\Z',
+            '', candidate_display, flags=re.I,
+        )
+        candidate_key = _history_title_key(_catalog_search_title(candidate_display))
+        identity_keys = {target_key, _history_title_key(meta.get('original_title', ''))}
         identity_keys.update(_history_title_key(value) for value in (meta.get('search_aliases') or []))
         identity_keys.discard('')
         if candidate_key and any(_proper_title_prefix(key, candidate_key) for key in identity_keys):
