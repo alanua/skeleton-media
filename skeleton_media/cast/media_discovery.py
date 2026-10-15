@@ -1214,7 +1214,17 @@ def _candidate_content_compatible(meta: dict[str, Any], item: dict[str, Any]) ->
                 return False
     if target_type == 'tv':
         target_key = _history_title_key(meta.get('title', ''))
-        candidate_key = _history_title_key(item.get('title', ''))
+        # Ignore display-only episode counts/language/online labels, not real spin-offs.
+        candidate_display = str(item.get('title') or '')
+        candidate_display = re.sub(
+            r'\s*\(\s*\d+\s*(?:серій|серії|episodes?)\s*\)', '',
+            candidate_display, flags=re.I,
+        )
+        candidate_display = re.sub(
+            r'\s+(?:українською|російською)(?:\s+онлайн)?\s*\Z',
+            '', candidate_display, flags=re.I,
+        )
+        candidate_key = _history_title_key(_catalog_search_title(candidate_display))
         identity_keys = {target_key, _history_title_key(meta.get('original_title', ''))}
         identity_keys.update(_history_title_key(value) for value in (meta.get('search_aliases') or []))
         identity_keys.discard('')
