@@ -296,7 +296,7 @@ def compact_rolling_captions(
 
 def _overlap_token(word: str) -> str:
     # Unicode-aware: accents, Cyrillic and digits remain meaningful.
-    return re.sub(r"^\\W+|\\W+$", "", word, flags=re.UNICODE).casefold()
+    return re.sub(r"^\W+|\W+$", "", word, flags=re.UNICODE).casefold()
 
 
 def transcript_to_jsonl(segments: Sequence[TranscriptSegment]) -> str:
