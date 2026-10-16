@@ -110,3 +110,33 @@ dios_video_process_one → video_process_one(profile=DIOS)
 ## Current source boundary
 
 The source implementation contains the universal core, local provider contracts, queue, worker, artifact storage, Sona/Ollama transports and synthetic tests. It does not register protected operations, deploy to HomeEdge, process a real URL, enable a worker, import the DIOS corpus or merge itself.
+
+
+## Global Skeleton capability and ancillary/branch invariants
+
+This repository **owns the single universal Video Understanding implementation**.
+The Python entrypoint `skeleton_media.video_understanding.operations.shared_capability_inventory()`
+publishes a deterministic public-safe **source contract** for the existing eight
+typed operations. It advertises `ALL_AUTHORIZED_ANCILLARIES_AND_CHAT_BRANCHES`:
+all authorized Skeleton ancillaries and chat branches use the same operations,
+queue/worker contract and MemoryGateway canonical store, rather than copying the
+video pipeline or maintaining per-ancillary indexes.
+
+DIOS is a compatibility profile (`dios_video_*` aliases), not a second video
+backend. Profiles influence evidence interpretation and project routing, but
+not identity, Skeleton Gate rights or access to the canonical storage.
+
+**Source contract is not deployment.** Until the canonical Skeleton Control
+Gate explicitly enrolls and enables the external media provider, the manifest
+returns `registration_status=CONTROL_PLANE_ATTESTATION_REQUIRED` and does **not** assert runtime activation.
+A green source test is not evidence that operations are already callable from
+other ChatGPT branches. Never change protected Skeleton registries, start
+workers, or migrate the DIOS corpus while publishing this source-only contract.
+
+Protected follow-up: enroll the eight operations once in the Skeleton Control
+registry/MCP authority, bind authenticated calls to the one external
+`skeleton-media` runtime, validate cross-ancillary scoped access, public-safe
+receipts, one-worker concurrency and MemoryGateway readback on a disposable
+synthetic fixture. Real-video Home Edge cutover and legacy DIOS preservation
+require separate exact-SHA operator approval; the current media playback path
+must remain untouched.
