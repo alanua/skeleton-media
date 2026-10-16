@@ -95,3 +95,23 @@ The earlier operator-approved source fixture completed timed subtitles and
 320x180 storyboard OCR; its high-resolution stream remained blocked.
 Real Home Edge rollout, MemoryGateway writes and global MCP/Gate activation
 require their separate approvals.
+
+### Fixed public Android metadata fallback
+
+The operator-approved real-video scratch pilot showed the standard web client
+URL served initial ranges but then returned 403. The same public, non-DRM,
+non-live clip transferred fully through the **fixed** yt-dlp Android metadata
+profile and the existing strict range downloader: 60,482,449 bytes, H.264+AAC,
+640x360, 41 actual decoded frames, 31 distinct evidence frames, 868 timed
+Ukrainian caption cues (97.26% coverage), and 28 OCR-nonempty evidence frames.
+Original video and scratch source code were removed after SHA manifest
+verification. This does **not** assert a deployed global operation.
+
+On YouTube `SOURCE_MEDIA_FAILED`, `YtDlpAdapter` now fetches one additional
+metadata document using fixed `youtube:player_client=android` and compares
+the opaque source video IDs with the original metadata before bounded
+Googlevideo download. It does not accept arbitrary extractor options or user
+credentials; identity mismatch is a hard block. Public operation semantics,
+legacy DIOS runtime, MemoryGateway storage, Gate/Runner and production TV
+remain unchanged. This new source path must receive exact-head CI and
+operator-controlled deploy review before Home Edge activation.
