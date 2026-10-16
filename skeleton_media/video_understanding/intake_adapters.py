@@ -6,6 +6,8 @@ import ipaddress
 import json
 import mimetypes
 import os
+import re
+import time
 import shutil
 import socket
 import ssl
@@ -60,6 +62,30 @@ class YtDlpAdapter:
                 "--ignore-config",
                 "--no-playlist",
                 "--no-warnings",
+                "--dump-single-json",
+                "--skip-download",
+                "--",
+                source.normalized_private_source,
+            ),
+            workspace,
+            timeout_seconds=min(180, self.config.limits.subprocess_timeout_seconds),
+        )
+
+    def android_metadata_command(self, source: SourceClassification, workspace: Path) -> CommandRequest:
+        """Fixed public YouTube metadata profile used only after media 403.
+
+        Never accepts client names or extractor arguments from a chat request.
+        """
+        if source.adapter != "youtube":
+            raise VideoUnderstandingError("ADAPTER_MISMATCH", "Android metadata is YouTube-only")
+        return CommandRequest(
+            "yt_dlp",
+            (
+                "--ignore-config",
+                "--no-playlist",
+                "--no-warnings",
+                "--extractor-args",
+                "youtube:player_client=android",
                 "--dump-single-json",
                 "--skip-download",
                 "--",
@@ -137,7 +163,45 @@ class YtDlpAdapter:
         media_path: Path | None = None
         digest: str | None = None
         if needs_media:
-            self.runner.require_success(self.media_command(source, workspace), reason_code="SOURCE_MEDIA_FAILED")
+            try:
+                self.runner.require_success(self.media_command(source, workspace), reason_code="SOURCE_MEDIA_FAILED")
+            except VideoUnderstandingError as exc:
+                if exc.reason_code != "SOURCE_MEDIA_FAILED" or source.adapter != "youtube":
+                    raise
+                # The normal web-client progressive URL may return HTTP 403
+                # after a few megabytes. The fixed public Android profile is
+                # only a second metadata source; it supplies no credentials
+                # and is never selectable through a public operation.
+                alternative_result = self.runner.require_success(
+                    self.android_metadata_command(source, workspace),
+                    reason_code="SOURCE_ANDROID_METADATA_FAILED",
+                )
+                try:
+                    original = json.loads(metadata_result.stdout_text())
+                    alternative = json.loads(alternative_result.stdout_text())
+                except (ValueError, TypeError) as parse_error:
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_METADATA_INVALID", "source metadata is invalid"
+                    ) from parse_error
+                if not isinstance(original, dict) or not isinstance(alternative, dict):
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_METADATA_INVALID", "source metadata is invalid"
+                    )
+                original_id, alternative_id = original.get("id"), alternative.get("id")
+                if (
+                    not isinstance(original_id, str)
+                    or not original_id
+                    or not isinstance(alternative_id, str)
+                    or alternative_id != original_id
+                ):
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_IDENTITY_MISMATCH", "source identity changed"
+                    )
+                download_youtube_progressive_ranges(
+                    alternative,
+                    workspace / "source.mp4",
+                    self.config,
+                )
             candidates = [path for path in workspace.glob("source.*") if path.is_file()]
             if len(candidates) != 1:
                 raise VideoUnderstandingError("SOURCE_MEDIA_AMBIGUOUS", "yt-dlp did not produce exactly one media file")
@@ -174,6 +238,181 @@ class YtDlpAdapter:
                 "live_status": _bounded_optional_text(payload.get("live_status"), 64),
             },
         )
+
+
+# Conservative, site-specific transport fallback. It is not a second video
+# pipeline and cannot be requested through any public Skeleton operation.
+_YOUTUBE_RANGE_BYTES = 1024 * 1024
+_YOUTUBE_RANGE_MAX_BYTES = 256 * 1024 * 1024
+_YOUTUBE_RANGE_MAX_SECONDS = 180
+_YOUTUBE_RANGE_HEADER = re.compile(r"^bytes ([0-9]+)-([0-9]+)/([0-9]+)$")
+
+
+@dataclass(frozen=True)
+class _RangeChunk:
+    http_status: int
+    content_range: str
+    content_type: str
+    data: bytes
+
+
+def download_youtube_progressive_ranges(
+    metadata: Mapping[str, Any],
+    target: Path,
+    config: VideoRuntimeConfig,
+    *,
+    fetch_chunk: Callable[[str, int, int], _RangeChunk] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> int:
+    """Bounded progressive MP4 transfer from yt-dlp's public YouTube metadata.
+
+    HTTPS is pinned to globally routed Googlevideo addresses; credentials,
+    arbitrary domains, redirects and configurable headers are prohibited.
+    A failed/uncertain partial is removed, never promoted as usable media.
+    """
+    if metadata.get("availability") != "public" or metadata.get("is_live") is not False:
+        raise VideoUnderstandingError("SOURCE_RANGE_NOT_PUBLIC", "range fallback requires a non-live public source")
+    if metadata.get("live_status") not in (None, "not_live") or metadata.get("age_limit", 0) not in (0, None):
+        raise VideoUnderstandingError("SOURCE_RANGE_NOT_PUBLIC", "range fallback excludes live or restricted media")
+    if not isinstance(metadata.get("formats"), list):
+        raise VideoUnderstandingError("SOURCE_RANGE_FORMAT_MISSING", "source format list is missing")
+    maximum = min(config.limits.max_download_bytes, _YOUTUBE_RANGE_MAX_BYTES)
+    candidates: list[tuple[int, int, str]] = []
+    for format_info in metadata["formats"]:
+        if not isinstance(format_info, Mapping):
+            continue
+        height = format_info.get("height")
+        if (
+            format_info.get("protocol") != "https"
+            or format_info.get("ext") != "mp4"
+            or format_info.get("has_drm") is not False
+            or not isinstance(height, int)
+            or not 144 <= height <= 480
+            or format_info.get("vcodec") in (None, "none")
+            or format_info.get("acodec") in (None, "none")
+        ):
+            continue
+        approximate = format_info.get("filesize") or format_info.get("filesize_approx")
+        if isinstance(approximate, bool) or not isinstance(approximate, int) or not 1024 <= approximate <= maximum:
+            continue
+        raw_url = format_info.get("url")
+        if not isinstance(raw_url, str):
+            continue
+        try:
+            _validate_youtube_cdn_url(raw_url)
+        except VideoUnderstandingError:
+            continue
+        candidates.append((height, approximate, raw_url))
+    if not candidates:
+        raise VideoUnderstandingError("SOURCE_RANGE_FORMAT_MISSING", "no bounded progressive public MP4 format")
+    # Prefer 360p where available; preserve sound for ASR. Candidate is
+    # derived from provider metadata, never from the user's request body.
+    candidates.sort(key=lambda row: (abs(row[0] - 360), row[1]))
+    _, _, url = candidates[0]
+    workspace = target.parent.resolve(strict=True)
+    approved = config.temp_root.resolve(strict=False)
+    if workspace != approved and approved not in workspace.parents:
+        raise VideoUnderstandingError("SOURCE_RANGE_WORKSPACE_DENIED", "range transfer must stay in private temporary root")
+    if target.name != "source.mp4" or target.exists() or target.is_symlink():
+        raise VideoUnderstandingError("SOURCE_RANGE_TARGET_UNSAFE", "range transfer target already exists or is unsafe")
+    temporary = workspace / "source.range-partial"
+    if temporary.exists() or temporary.is_symlink():
+        raise VideoUnderstandingError("SOURCE_RANGE_TARGET_UNSAFE", "range partial target already exists")
+    fetch = fetch_chunk or _read_youtube_googlevideo_range
+    started = monotonic()
+    deadline = min(float(config.limits.subprocess_timeout_seconds), _YOUTUBE_RANGE_MAX_SECONDS)
+    total: int | None = None
+    offset = 0
+    try:
+        with temporary.open("xb") as stream:
+            os.chmod(temporary, 0o600)
+            while total is None or offset < total:
+                if monotonic() - started > deadline:
+                    raise VideoUnderstandingError("SOURCE_RANGE_TIMEOUT", "bounded range transfer exceeded its deadline")
+                end = offset + _YOUTUBE_RANGE_BYTES - 1
+                if total is not None:
+                    end = min(end, total - 1)
+                chunk = fetch(url, offset, end)
+                if chunk.http_status != 206:
+                    raise VideoUnderstandingError("SOURCE_RANGE_HTTP_FAILED", "media server did not support strict byte ranges")
+                match = _YOUTUBE_RANGE_HEADER.fullmatch(chunk.content_range)
+                if match is None:
+                    raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "invalid Content-Range")
+                first, last, declared = map(int, match.groups())
+                if first != offset or last != end or not offset < declared <= maximum or last >= declared:
+                    raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "range offset or total size mismatch")
+                if total is not None and total != declared:
+                    raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "media size changed during transfer")
+                if chunk.content_type.split(";", 1)[0].strip().lower() not in {"video/mp4", "application/octet-stream"}:
+                    raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "media type is unsupported")
+                if not isinstance(chunk.data, bytes) or len(chunk.data) != end - offset + 1:
+                    raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "incomplete range response")
+                total = declared
+                offset += len(chunk.data)
+                stream.write(chunk.data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if total is None or temporary.stat().st_size != total:
+            raise VideoUnderstandingError("SOURCE_RANGE_INVALID_RESPONSE", "transfer did not complete")
+        os.replace(temporary, target)
+        return total
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_youtube_cdn_url(url: str) -> None:
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold().rstrip(".")
+        port = parsed.port
+    except ValueError as exc:
+        raise VideoUnderstandingError("SOURCE_RANGE_URL_UNSAFE", "invalid CDN URL") from exc
+    if (
+        len(url) > 8192 or parsed.scheme != "https" or not host
+        or not (host == "googlevideo.com" or host.endswith(".googlevideo.com"))
+        or port not in (None, 443) or parsed.username is not None
+        or parsed.password is not None or parsed.fragment
+    ):
+        raise VideoUnderstandingError("SOURCE_RANGE_URL_UNSAFE", "range requests require Googlevideo HTTPS")
+
+
+def _read_youtube_googlevideo_range(url: str, start: int, end: int) -> _RangeChunk:
+    _validate_youtube_cdn_url(url)
+    if start < 0 or end < start or end - start + 1 > _YOUTUBE_RANGE_BYTES:
+        raise VideoUnderstandingError("SOURCE_RANGE_INVALID_REQUEST", "range request is outside fixed bounds")
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    ips = _resolve_global_addresses(host, 443)
+    connection = _PinnedHTTPSConnection(host, ips[0], 443, timeout=18)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    try:
+        connection.request("GET", path, headers={
+            "Range": f"bytes={start}-{end}",
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "video/mp4,application/octet-stream",
+            "Accept-Encoding": "identity",
+        })
+        if connection.sock is None or not ipaddress.ip_address(connection.sock.getpeername()[0]).is_global:
+            raise VideoUnderstandingError("SOURCE_RANGE_PEER_UNSAFE", "non-global CDN peer")
+        response = connection.getresponse()
+        try:
+            if response.status != 206:
+                raise VideoUnderstandingError("SOURCE_RANGE_HTTP_FAILED", "range endpoint did not return 206")
+            body = response.read(_YOUTUBE_RANGE_BYTES + 1)
+            return _RangeChunk(
+                http_status=response.status,
+                content_range=response.getheader("Content-Range") or "",
+                content_type=response.getheader("Content-Type") or "",
+                data=body,
+            )
+        finally:
+            response.close()
+    except (OSError, TimeoutError, http.client.HTTPException) as exc:
+        raise VideoUnderstandingError("SOURCE_RANGE_NETWORK_FAILED", "range request failed") from exc
+    finally:
+        connection.close()
 
 
 class LocalFileAdapter:
