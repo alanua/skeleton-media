@@ -43,6 +43,7 @@ from skeleton_media.video_understanding.transcript import (
     TranscriptQuality,
     TranscriptSegment,
     assess_quality,
+    compact_rolling_captions,
     parse_transcript,
     transcript_to_jsonl,
 )
@@ -183,6 +184,24 @@ class VideoPipeline:
             transcript_root = workspace / "transcript"
             transcript_root.mkdir(exist_ok=True)
             (transcript_root / "normalized.jsonl").write_text(transcript_to_jsonl(segments), encoding="utf-8")
+            # Preserve every source cue and emit a separate, private readable version.
+            # This removes only repeated caption text; it is NOT word-accuracy proof.
+            readable_segments = compact_rolling_captions(segments)
+            (transcript_root / "readable.jsonl").write_text(
+                transcript_to_jsonl(readable_segments), encoding="utf-8"
+            )
+            _write_json(
+                transcript_root / "verification.json",
+                {
+                    "schema": "skeleton.video_transcript.verification.v1",
+                    "word_accuracy_status": "UNVERIFIED",
+                    "independent_asr": "NOT_RUN",
+                    "coverage_is_not_word_accuracy": True,
+                    "overlap_method": "EXACT_MULTIWORD_NEARBY",
+                    "source_cue_count": len(segments),
+                    "readable_segment_count": len(readable_segments),
+                },
+            )
             _write_json(transcript_root / "quality.json", quality.__dict__)
             original_root = transcript_root / "original"
             original_root.mkdir(exist_ok=True)
