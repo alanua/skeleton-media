@@ -71,6 +71,30 @@ class YtDlpAdapter:
             timeout_seconds=min(180, self.config.limits.subprocess_timeout_seconds),
         )
 
+    def android_metadata_command(self, source: SourceClassification, workspace: Path) -> CommandRequest:
+        """Fixed public YouTube metadata profile used only after media 403.
+
+        Never accepts client names or extractor arguments from a chat request.
+        """
+        if source.adapter != "youtube":
+            raise VideoUnderstandingError("ADAPTER_MISMATCH", "Android metadata is YouTube-only")
+        return CommandRequest(
+            "yt_dlp",
+            (
+                "--ignore-config",
+                "--no-playlist",
+                "--no-warnings",
+                "--extractor-args",
+                "youtube:player_client=android",
+                "--dump-single-json",
+                "--skip-download",
+                "--",
+                source.normalized_private_source,
+            ),
+            workspace,
+            timeout_seconds=min(180, self.config.limits.subprocess_timeout_seconds),
+        )
+
     def subtitle_command(self, source: SourceClassification, workspace: Path) -> CommandRequest:
         languages = ",".join(self.config.subtitle_languages)
         return CommandRequest(
@@ -144,10 +168,37 @@ class YtDlpAdapter:
             except VideoUnderstandingError as exc:
                 if exc.reason_code != "SOURCE_MEDIA_FAILED" or source.adapter != "youtube":
                     raise
-                # Opt-in by error state only: never a public operation input or a
-                # substitute for Gate approval. Refuse private/DRM/live content.
+                # The normal web-client progressive URL may return HTTP 403
+                # after a few megabytes. The fixed public Android profile is
+                # only a second metadata source; it supplies no credentials
+                # and is never selectable through a public operation.
+                alternative_result = self.runner.require_success(
+                    self.android_metadata_command(source, workspace),
+                    reason_code="SOURCE_ANDROID_METADATA_FAILED",
+                )
+                try:
+                    original = json.loads(metadata_result.stdout_text())
+                    alternative = json.loads(alternative_result.stdout_text())
+                except (ValueError, TypeError) as parse_error:
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_METADATA_INVALID", "source metadata is invalid"
+                    ) from parse_error
+                if not isinstance(original, dict) or not isinstance(alternative, dict):
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_METADATA_INVALID", "source metadata is invalid"
+                    )
+                original_id, alternative_id = original.get("id"), alternative.get("id")
+                if (
+                    not isinstance(original_id, str)
+                    or not original_id
+                    or not isinstance(alternative_id, str)
+                    or alternative_id != original_id
+                ):
+                    raise VideoUnderstandingError(
+                        "SOURCE_ANDROID_IDENTITY_MISMATCH", "source identity changed"
+                    )
                 download_youtube_progressive_ranges(
-                    json.loads(metadata_result.stdout_text()),
+                    alternative,
                     workspace / "source.mp4",
                     self.config,
                 )
