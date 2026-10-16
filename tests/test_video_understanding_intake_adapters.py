@@ -241,7 +241,12 @@ def test_youtube_adapter_uses_one_existing_pipeline_on_media_403(tmp_path: Path,
     class Media403Runner:
         def require_success(self, request, *, reason_code):
             if "--dump-single-json" in request.args:
-                metadata = {**_public_video_metadata(), "title": "Synthetic", "duration": 60}
+                metadata = {**_public_video_metadata(), "id": "AbCdEf12345", "title": "Synthetic", "duration": 60}
+                if "--extractor-args" in request.args:
+                    assert "youtube:player_client=android" in request.args
+                    assert "--ignore-config" in request.args
+                    assert "cookie" not in " ".join(request.args).lower()
+                    calls.append("android_metadata")
                 return CommandResult(("yt-dlp",), 0, json.dumps(metadata).encode(), b"", 0)
             assert "--merge-output-format" in request.args
             calls.append("yt_dlp_attempt")
@@ -260,7 +265,7 @@ def test_youtube_adapter_uses_one_existing_pipeline_on_media_403(tmp_path: Path,
 
     monkeypatch.setattr(intake_adapters, "download_youtube_progressive_ranges", fake_download)
     acquired = YtDlpAdapter(cfg, Media403Runner()).acquire(source, workspace, ProcessingMode.STANDARD)
-    assert calls == ["yt_dlp_attempt", "range_fallback"]
+    assert calls == ["yt_dlp_attempt", "android_metadata", "range_fallback"]
     assert acquired.media_path == workspace / "source.mp4"
     assert len(acquired.subtitle_paths) == 1
     assert acquired.source_sha256
@@ -302,3 +307,47 @@ def test_youtube_adapter_does_not_fallback_for_other_errors_or_vimeo(tmp_path: P
             classify_remote_url("https://vimeo.com/123456789"), workspace, ProcessingMode.STANDARD,
         )
     assert vimeo.value.reason_code == "SOURCE_MEDIA_FAILED"
+
+def test_android_fallback_refuses_changed_media_identity(tmp_path: Path, monkeypatch) -> None:
+    from skeleton_media.video_understanding import intake_adapters
+
+    cfg, _ = _range_cfg(tmp_path)
+    workspace = cfg.temp_root / "id-mismatch"; workspace.mkdir()
+    source = classify_remote_url("https://youtu.be/AbCdEf12345")
+    calls = []
+
+    class SwappedMetadataRunner:
+        def require_success(self, request, *, reason_code):
+            if "--dump-single-json" in request.args:
+                android = "--extractor-args" in request.args
+                payload = {
+                    **_public_video_metadata(),
+                    "id": "WRONG_NOBODY" if android else "AbCdEf12345",
+                    "title": "Synthetic", "duration": 60,
+                }
+                return CommandResult(("yt-dlp",), 0, json.dumps(payload).encode(), b"", 0)
+            raise VideoUnderstandingError(reason_code, "synthetic 403")
+
+        def run(self, request):
+            return CommandResult(("yt-dlp",), 0, b"", b"", 0)
+
+    def never_fallback(*args, **kwargs):
+        calls.append("unexpected")
+        pytest.fail("never download another video's media")
+
+    monkeypatch.setattr(intake_adapters, "download_youtube_progressive_ranges", never_fallback)
+    with pytest.raises(VideoUnderstandingError) as rejected:
+        YtDlpAdapter(cfg, SwappedMetadataRunner()).acquire(source, workspace, ProcessingMode.STANDARD)
+    assert rejected.value.reason_code == "SOURCE_ANDROID_IDENTITY_MISMATCH"
+    assert calls == []
+    assert not list(workspace.iterdir())
+
+
+def test_android_metadata_command_cannot_be_used_for_vimeo(tmp_path: Path) -> None:
+    cfg, workspace = _range_cfg(tmp_path)
+    adapter = YtDlpAdapter(cfg, Runner(workspace))
+    with pytest.raises(VideoUnderstandingError) as invalid:
+        adapter.android_metadata_command(
+            classify_remote_url("https://vimeo.com/123456789"), workspace
+        )
+    assert invalid.value.reason_code == "ADAPTER_MISMATCH"
