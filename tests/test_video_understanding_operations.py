@@ -98,3 +98,64 @@ def test_doctor_checks_ollama_and_sona_without_running_them() -> None:
 def test_dios_compatibility_profile_is_supported() -> None:
     result = plan_operation("video_doctor", {"profile": "DIOS"})
     assert result["private_plan"]["profile"] == "DIOS"
+
+def test_universal_inventory_is_shared_and_not_activated() -> None:
+    from skeleton_media.video_understanding.operations import (
+        GLOBAL_CAPABILITY_ID, shared_capability_inventory,
+    )
+    from skeleton_media.video_understanding.models import Domain
+    from skeleton_media.video_understanding.compatibility import DIOS_OPERATION_MAP
+
+    manifest = shared_capability_inventory()
+    assert manifest["schema"] == "skeleton.video_understanding.shared_capability.v1"
+    assert manifest["capability_id"] == GLOBAL_CAPABILITY_ID
+    assert manifest["repository"] == "alanua/skeleton-media"
+    assert manifest["scope"] == "ALL_AUTHORIZED_ANCILLARIES_AND_CHAT_BRANCHES"
+    assert manifest["registration_status"] == "CONTROL_PLANE_ATTESTATION_REQUIRED"
+    assert manifest["runtime_activation"] == "NOT_ASSERTED_BY_SOURCE_CONTRACT"
+    assert manifest["single_backend_required"] is True
+    assert manifest["single_active_worker_required"] is True
+    assert manifest["canonical_storage"] == "MEMORY_GATEWAY_ONLY"
+    assert manifest["public_output_policy"] == "AGGREGATE_ONLY"
+    assert manifest["profile_optional"] is True
+    assert manifest["profiles"] == sorted(domain.value for domain in Domain)
+    assert manifest["operations"] == sorted(OPERATIONS)
+    assert manifest["compatibility_aliases"] == dict(sorted(DIOS_OPERATION_MAP.items()))
+
+
+@pytest.mark.parametrize("profile", [
+    "DIOS", "HOME_AUTOMATION", "TRAVEL", "CONSTRUCTION",
+    "LEGAL_DOCUMENTS", "AVIATION", "SKELETON_ARCHITECTURE", "GENERAL_KNOWLEDGE",
+])
+def test_any_ancillary_profile_uses_same_global_operation_and_redaction(profile: str) -> None:
+    from skeleton_media.video_understanding.operations import shared_capability_inventory
+
+    payload = {
+        "url": "https://youtu.be/AbCdEf12345",
+        "profile": profile,
+        "project_hint": "PRIVATE_PROJECT_REFERENCE",
+    }
+    planned = plan_operation("video_understand_url", payload)
+    assert planned["private_plan"]["profile"] == profile
+    assert planned["private_plan"]["selected_domain"] == profile
+    assert planned["private_plan"]["override_applied"] is (profile != "GENERAL_KNOWLEDGE")
+    assert planned["private_plan"]["canonical_mutation"] == "MEMORY_GATEWAY_ONLY"
+    assert planned["private_plan"]["media_execution"] is False
+    public = repr(planned["public_receipt"])
+    assert "PRIVATE_PROJECT_REFERENCE" not in public
+    assert "AbCdEf12345" not in public
+    assert shared_capability_inventory()["registration_status"] == "CONTROL_PLANE_ATTESTATION_REQUIRED"
+
+
+def test_inventory_is_deterministic_and_cannot_mutate_shared_operation_contract() -> None:
+    import json
+    from skeleton_media.video_understanding.operations import shared_capability_inventory
+
+    original = json.dumps(shared_capability_inventory(), sort_keys=True, separators=(",", ":"))
+    changed = shared_capability_inventory()
+    changed["operations"].clear()
+    changed["compatibility_aliases"]["dios_video_doctor"] = "video_delete_everything"
+    changed["profiles"].clear()
+    assert json.dumps(shared_capability_inventory(), sort_keys=True, separators=(",", ":")) == original
+    assert "https://" not in original
+    assert "PRIVATE_PROJECT" not in original
