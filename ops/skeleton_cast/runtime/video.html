@@ -285,6 +285,32 @@ async function clearUrl(){clearTimeout(pollTimer);await clearSession();currentJo
 $('videoForm').onsubmit=e=>{e.preventDefault();playSelected()};
 $('autoplayToggle').addEventListener('change',e=>setAutoplay(e.target.checked));$('url').addEventListener('input',setResetReady);$('url').addEventListener('change',async()=>{if(!locked&&jobData&&$('url').value!==jobData.page_url){currentJobId=null;clearSession();resetOptions('Натисніть «Відкрити відео», щоб виконати пошук.')}});
 $('historyPicker').onclick=()=>openHistorySheet(false);$('historySheetClose').onclick=closeHistorySheet;$('historySheetBackdrop').onclick=closeHistorySheet;$('historySearch').addEventListener('input',e=>{historySearchQuery=e.target.value;renderHistoryCards()});$('historyCards').onclick=e=>{const remove=e.target.closest('[data-delete-history-id]');if(remove){e.preventDefault();e.stopPropagation();deleteHistory(remove.dataset.deleteHistoryId);return}const button=e.target.closest('[data-history-id]');if(button)chooseHistory(button.dataset.historyId)};window.openHistoryEditor=()=>openHistorySheet(true);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('historySheet').hidden)closeHistorySheet()});$('season').onchange=()=>{updateEpisode();if(jobData)renderCatalog(jobData);setReady(!!selectedSource())};$('episode').onchange=()=>{updateQuality();setReady(!!selectedSource())};$('quality').onchange=()=>{updateVoice();setReady(!!selectedSource())};$('voice').onchange=()=>{renderTracks();updateSummary();writeSession();setReady(!!selectedSource())};$('audioTrack').onchange=updateSummary;$('subtitleTrack').onchange=updateSummary;
+// Source resolution and release updates can finish after this tab was opened.
+// Refresh only when the existing selected job actually changes; never start playback.
+let catalogRefreshBusy=false;
+function catalogRefreshStamp(job={}){
+  return [job.status||'',job.resolved_at||'',
+    (job.sources||[]).map(s=>[s.source_id,s.season,s.episode,s.group||s.translation].join(':')).join('|'),
+    JSON.stringify(job.catalog?.seasons||[])].join('::');
+}
+async function refreshVisibleVideoCatalog(){
+  if(document.hidden||!currentJobId||!jobData||catalogRefreshBusy||restoring)return;
+  const jobId=currentJobId,oldStamp=catalogRefreshStamp(jobData);
+  catalogRefreshBusy=true;
+  try{
+    const[r,latest]=await jf('/api/jobs/'+encodeURIComponent(jobId),{cache:'no-store'});
+    if(!r.ok||currentJobId!==jobId||catalogRefreshStamp(latest)===oldStamp)return;
+    const source=selectedSource();
+    const preferred={season:$('season').value,episode:$('episode').value,
+      quality:$('quality').value,voice:$('voice').value,source_id:source?.source_id||''};
+    await loadJob(preferred);
+  }catch(e){console.warn('video source refresh unavailable',e)}
+  finally{catalogRefreshBusy=false}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVisibleVideoCatalog()});
+window.addEventListener('pageshow',()=>refreshVisibleVideoCatalog());
+setInterval(()=>refreshVisibleVideoCatalog(),90000);
+
 async function boot(){setReady(false);setResetReady();await loadHistory();await loadAutoplay();const params=new URLSearchParams(location.search);if(params.get('edit')==='history')setTimeout(()=>openHistorySheet(true),0);const sharedJob=params.get('job_id');if(sharedJob){currentJobId=sharedJob;setLocked(false);let preferred={};try{const[r,p]=await jf('/api/player',{cache:'no-store'});if(r.ok&&p.running&&p.job_id===sharedJob){currentPlayer=p;preferred={source_id:p.source_id,season:p.season,episode:p.episode,voice:p.translation}}}catch(e){}await loadJob(preferred);return}const saved=await readSession();if(saved.job_id){currentJobId=saved.job_id;$('url').value=saved.url||'';setLocked(!!saved.locked);await loadJob(saved);return}try{const[r,p]=await jf('/api/player');if(r.ok&&p.running&&p.job_id){currentPlayer=p;currentJobId=p.job_id;setLocked(true);await loadJob({source_id:p.source_id});await writeSession()}}catch(e){}}boot();
 </script>
 </body></html>
