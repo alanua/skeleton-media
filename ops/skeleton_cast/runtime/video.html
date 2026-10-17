@@ -81,7 +81,7 @@
     <header class="history-sheet-head"><strong id="historySheetTitle">Історія</strong><button id="historySheetClose" type="button" aria-label="Закрити"><span class="mdi" style="--icon:url('/static/icons/mdi/close-circle-outline.svg')"></span></button></header>
     <div class="history-sheet-tools">
       <label class="history-search" for="historySearch"><span class="mdi" style="--icon:url('/static/icons/mdi/magnify.svg')"></span><input id="historySearch" type="search" inputmode="search" autocomplete="off" spellcheck="false" placeholder="Пошук в історії" aria-label="Пошук в історії"></label>
-      <div class="history-sort-note"><span>Останні переглянуті — першими</span><span id="historyResultCount" aria-live="polite"></span></div>
+      <div class="history-sort-note"><span>Останні додані або переглянуті — першими</span><span id="historyResultCount" aria-live="polite"></span></div>
     </div>
     <div id="historyCards" class="history-card-list"></div>
   </section>
@@ -95,7 +95,7 @@
 <script src="/static/home-shell.js?v=130"></script>
 <script>
 const $=id=>document.getElementById(id);
-let currentJobId=null,sources=[],jobData=null,pollTimer=null,noticeTimer=null,currentPlayer=null,locked=false,restoring=false,historyItems=[],historyEditMode=false,historySearchQuery='',autoplayEnabled=false;
+let currentJobId=null,sources=[],jobData=null,pollTimer=null,noticeTimer=null,currentPlayer=null,locked=false,restoring=false,historyItems=[],historyLoadedAt=0,historyLoadPromise=null,historyEditMode=false,historySearchQuery='',autoplayEnabled=false;
 const unique=a=>[...new Set(a)];
 const esc=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 const episodeNumber=x=>{const m=String(x).match(/\d+/);return m?Number(m[0]):9999};
@@ -270,11 +270,52 @@ function normalizeHistorySearch(value=''){return String(value||'').normalize('NF
 function historySearchText(item){return normalizeHistorySearch([item?.title,item?.year,historyTypeLabel(item),item?.media_type==='tv'?seasonLabel(item?.seasons||[]):'',item?.overview].filter(Boolean).join(' '))}
 function visibleHistoryItems(){const query=normalizeHistorySearch(historySearchQuery);if(!query)return historyItems;const terms=query.split(' ').filter(Boolean);return historyItems.filter(item=>{const text=historySearchText(item);return terms.every(term=>text.includes(term))})}
 function renderHistoryCards(){const cards=$('historyCards'),visible=visibleHistoryItems(),count=$('historyResultCount');if(count)count.textContent=historySearchQuery?`${visible.length} з ${historyItems.length}`:String(historyItems.length);if(!visible.length){cards.innerHTML=`<div class="history-empty"><span class="mdi" style="--icon:url('/static/icons/mdi/magnify.svg')"></span><strong>Нічого не знайдено</strong><span>Змініть запит у полі пошуку.</span></div>`;return}cards.innerHTML=visible.map(item=>{const meta=[historyTypeLabel(item),item.year||'',item.media_type==='tv'?seasonLabel(item.seasons||[]):'',metadataRuntimeLabel(item)].filter(Boolean).join(' · ');const poster=item.poster?`<img src="${esc(item.poster)}" alt="" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false">`:'';const fallback=`<span class="history-card-poster-fallback" ${item.poster?'hidden':''}><span class="mdi" style="--icon:url('/static/icons/mdi/movie-open.svg')"></span></span>`;const overview=item.overview?`<p>${esc(item.overview)}</p>`:'';const remove=historyEditMode?`<button class="history-delete-btn" type="button" data-delete-history-id="${esc(item.history_id)}" aria-label="Видалити ${esc(item.title)}"><span aria-hidden="true">×</span></button>`:'';return`<div class="history-card-item${item.history_id===$('history').value?' active':''}"><button class="history-card-open" type="button" data-history-id="${esc(item.history_id)}"><span class="history-card-poster">${poster}${fallback}</span><span class="history-card-copy"><strong>${esc(item.title)}</strong><span>${esc(meta)}</span>${overview}</span></button>${remove}</div>`}).join('')}
-async function openHistorySheet(edit=false){if($('historyPicker').disabled&&!edit)return;historyEditMode=!!edit;await loadHistory();historyEditMode=!!edit;$('historySheetTitle').textContent=historyEditMode?'Редагування історії':'Історія';$('historySearch').value=historySearchQuery;renderHistoryCards();$('historySheet').hidden=false;document.body.classList.add('history-sheet-open')}
+async function openHistorySheet(edit=false){
+  if(!historyLoadedAt)await loadHistory();
+  if($('historyPicker').disabled&&!edit)return;
+  historyEditMode=!!edit;
+  $('historySheetTitle').textContent=historyEditMode?'Редагування історії':'Додані твори';
+  $('historySearch').value=historySearchQuery;
+  $('historySheet').hidden=false;
+  document.body.classList.add('history-sheet-open');
+  renderHistoryCards();
+  if(Date.now()-historyLoadedAt>30000)void loadHistory(true);
+}
 function closeHistorySheet(){$('historySheet').hidden=true;document.body.classList.remove('history-sheet-open');historyEditMode=false}
 async function chooseHistory(historyId){setHistorySelection(historyId);closeHistorySheet();await openHistory(historyId)}
-async function deleteHistory(historyId){const item=historyItems.find(x=>x.history_id===historyId);try{const[r,j]=await jf('/api/video/history/'+encodeURIComponent(historyId),{method:'DELETE'});if(!r.ok)throw new Error(j.error||'Не вдалося видалити');historyItems=historyItems.filter(x=>x.history_id!==historyId);if($('history').value===historyId)setHistorySelection('');await loadHistory();historyEditMode=true;$('historySheetTitle').textContent='Редагування історії';renderHistoryCards();message(`Видалено: ${item?.title||'твір'}`)}catch(e){message(e.message||'Не вдалося видалити',true)}}
-async function loadHistory(){try{const selected=$('history')?.value||'';const[r,j]=await jf('/api/video/history');historyItems=r.ok&&Array.isArray(j.items)?j.items:[];const options=[{value:'',label:historyItems.length?'Оберіть збережений твір':'Історія порожня'},...historyItems.map(item=>({value:item.history_id,label:historyItemLabel(item)}))];fillOptions('history',options,selected);$('history').disabled=!historyItems.length;$('historyPicker').disabled=!historyItems.length;setHistorySelection(historyItems.some(x=>x.history_id===selected)?selected:'');renderHistoryCards()}catch(e){fillOptions('history',[{value:'',label:'Історія недоступна'}],'');$('history').disabled=true;$('historyPicker').disabled=true;$('historyPickerText').textContent='Історія недоступна'}}
+async function deleteHistory(historyId){const item=historyItems.find(x=>x.history_id===historyId);try{const[r,j]=await jf('/api/video/history/'+encodeURIComponent(historyId),{method:'DELETE'});if(!r.ok)throw new Error(j.error||'Не вдалося видалити');historyItems=historyItems.filter(x=>x.history_id!==historyId);historyLoadedAt=Date.now();if($('history').value===historyId)setHistorySelection('');renderSharedHistoryUi();historyEditMode=true;$('historySheetTitle').textContent='Редагування історії';renderHistoryCards();message(`Видалено: ${item?.title||'твір'}`)}catch(e){message(e.message||'Не вдалося видалити',true)}}
+function renderSharedHistoryUi(){
+  const selected=$('history')?.value||'';
+  if(historyItems.length){
+    const options=[{value:'',label:'Оберіть доданий твір'},...historyItems.map(item=>({value:item.history_id,label:historyItemLabel(item)}))];
+    fillOptions('history',options,selected);
+    $('history').disabled=false;$('historyPicker').disabled=false;
+    setHistorySelection(historyItems.some(x=>x.history_id===selected)?selected:'');
+  }else{
+    const label=historyLoadedAt?'Список доданих творів порожній':'Не вдалося завантажити список';
+    fillOptions('history',[{value:'',label}],'');
+    $('history').disabled=true;$('historyPicker').disabled=!historyLoadedAt;
+    $('historyPickerText').textContent=label;
+  }
+  if(!$('historySheet').hidden)renderHistoryCards();
+}
+async function loadHistory(force=false){
+  // All added works, excluding explicit deletions. Endpoint histories store only playback progress.
+  if(!force&&historyLoadedAt){renderSharedHistoryUi();return true}
+  if(historyLoadPromise)return historyLoadPromise;
+  historyLoadPromise=(async()=>{
+    let loaded=null;
+    try{
+      const[r,j]=await jf('/api/video/history',{cache:'no-store'});
+      if(r.ok&&Array.isArray(j.items))loaded=j.items.filter(item=>item&&item.history_id);
+    }catch(e){}
+    if(loaded){historyItems=loaded;historyLoadedAt=Date.now()}
+    else if(!historyLoadedAt){historyItems=[]}
+    renderSharedHistoryUi();
+    return loaded!==null;
+  })().finally(()=>{historyLoadPromise=null});
+  return historyLoadPromise;
+}
 async function openHistory(historyId=$('history').value){if(!historyId)return;setReady(false);message('Відкриваю з історії…');try{const[r,j]=await jf('/api/video/history/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history_id:historyId})});if(!r.ok)throw new Error(j.error||'Не вдалося відкрити історію');currentJobId=j.job_id;setLocked(false);await loadJob(j.preferred||{});message('Завантажено з історії без нового пошуку')}catch(e){message(e.message||'Історія недоступна',true)}}
 async function resolveUrl(){const url=$('url').value.trim();if(!url)return;setResetReady();resetOptions('Шукаю доступні варіанти…');renderCatalog({page_url:url,title:'Пошук відео'},'Шукаю картку й українські джерела…');setReady(false);message('Шукаю відео…');try{const[r,j]=await jf('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});if(!r.ok){message(j.error||'Не вдалося прочитати посилання',true);return}currentJobId=j.job_id;setLocked(false);writeSession();loadJob({})}catch(e){setReady(false);message('Home Edge недоступний',true)}}
 async function applyTrack(kind,value){const[r,j]=await jf('/api/player/track/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:value})});if(!r.ok)throw new Error(j.error||'Не вдалося змінити доріжку');currentPlayer=j.player||currentPlayer}
