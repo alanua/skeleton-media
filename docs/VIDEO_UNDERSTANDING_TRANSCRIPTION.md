@@ -25,3 +25,35 @@ Operator-selected priority: **transcription first**. No new service, database, w
 User URL, title, raw captions, generated readable text, local model data, video, and filesystem paths stay private; only synthetic regression text is committed. No service, Worker, Runner, Gate, Windows Ollama, Remote Desktop Commander, or deployment change in this PR. Do not merge or deploy from green unit tests alone.
 
 Known hardware (private audit; do not expose host/IP identifiers in public source): the currently reachable Windows fallback node has a local text LLM installation but its API is inactive and the checked environment had no working Whisper/Sona command. **A text LLM is not an ASR model.** Do not block transcript extraction on that LLM or count it as audio verification.
+
+## Private independent ASR bridge (stacked source-only draft)
+
+An existing `SonaBackend` can already accept a requester callable. The optional
+`PrivateAsrBridgeRequester` implements that callable contract with strict local
+WAV file containment, a byte cap, output cap, nonempty operator approval
+reference, and a trusted injected executor. This is a *transport protocol*,
+not a live service, installer, task runner, remote SSH login or capability
+registration. The executor itself MUST enforce the canonical Skeleton Gate,
+request identity, privacy and all platform admission checks; a mere
+`operator_approval_ref` string is NOT an authorization bypass.
+
+Request shape (PRIVATE only): `skeleton.video_understanding.private_asr_bridge_request.v1`,
+`operator_approval_ref`, `model`, `audio_wav` bytes, `timeout_seconds`,
+`max_output_bytes`. Response shape: `language`, `segments` (timed speech
+text); extraneous executor fields are discarded. Never log, stringify,
+publish or copy the private packet into source control. The old loopback Sona
+requester remains the default; explicit trusted runtime injection is required.
+
+`compare_independent_asr` checks two segment streams and records
+`AGREE_UNVERIFIED` on agreement or `REVIEW_REQUIRED` on mismatches,
+especially technical numeric mentions, text differences and language
+mismatches. A ratio between subtitle and ASR token sequences is NOT a
+word-error rate, speech accuracy metric, or ground truth. It must never
+automatically replace subtitle content, and model-name/date/price
+corrections require independent evidence.
+
+Pending separate operator-reviewed runtime steps: authorize the DE-PC executor
+through the established Gate, make SonaBridge injection part of one shared
+media worker, add a transcript-only operation that does not call vision,
+semantic LLM or MemoryGateway, test offline workstation and timeout behavior,
+and validate private audio scratch cleanup. **No activation from this draft.**
