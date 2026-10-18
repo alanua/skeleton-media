@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import difflib
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -297,6 +298,82 @@ def compact_rolling_captions(
 def _overlap_token(word: str) -> str:
     # Unicode-aware: accents, Cyrillic and digits remain meaningful.
     return re.sub(r"^\W+|\W+$", "", word, flags=re.UNICODE).casefold()
+
+
+
+
+@dataclass(frozen=True)
+class IndependentAsrComparison:
+    """Private evidence comparison, never a word-accuracy estimate."""
+
+    status: str
+    reason_codes: tuple[str, ...]
+    token_sequence_similarity: float | None
+    subtitle_segment_count: int
+    asr_segment_count: int
+
+    def private_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def compare_independent_asr(
+    source_subtitles: Sequence[TranscriptSegment],
+    independent_asr: Sequence[TranscriptSegment],
+    *,
+    review_below_similarity: float = 0.90,
+    max_tokens_per_source: int = 12_000,
+) -> IndependentAsrComparison:
+    """Check disagreement, not correctness, against a separate ASR engine.
+
+    Both systems can make the same mistake. Even perfect agreement is marked
+    AGREE_UNVERIFIED, never verified accuracy or ground-truth WER.
+    """
+    if not 0 < review_below_similarity <= 1:
+        raise ValueError("similarity review threshold is invalid")
+    if not 100 <= max_tokens_per_source <= 30_000:
+        raise ValueError("comparison token bound is invalid")
+    if not source_subtitles or not independent_asr:
+        return IndependentAsrComparison(
+            "REVIEW_REQUIRED", ("MISSING_INDEPENDENT_SOURCE",), None,
+            len(source_subtitles), len(independent_asr),
+        )
+    source_words = _comparison_tokens(compact_rolling_captions(source_subtitles))
+    asr_words = _comparison_tokens(compact_rolling_captions(independent_asr))
+    if len(source_words) > max_tokens_per_source or len(asr_words) > max_tokens_per_source:
+        return IndependentAsrComparison(
+            "REVIEW_REQUIRED", ("COMPARISON_TOO_LARGE",), None,
+            len(source_subtitles), len(independent_asr),
+        )
+    if not source_words or not asr_words:
+        return IndependentAsrComparison(
+            "REVIEW_REQUIRED", ("EMPTY_COMPARABLE_SPEECH",), None,
+            len(source_subtitles), len(independent_asr),
+        )
+    ratio = difflib.SequenceMatcher(a=source_words, b=asr_words, autojunk=False).ratio()
+    reasons: list[str] = []
+    source_technical = tuple(word for word in source_words if any(character.isdigit() for character in word))
+    asr_technical = tuple(word for word in asr_words if any(character.isdigit() for character in word))
+    if source_technical != asr_technical:
+        reasons.append("TECHNICAL_MENTION_DISAGREEMENT")
+    if ratio < review_below_similarity:
+        reasons.append("SPEECH_TEXT_DISAGREEMENT")
+    source_languages = {segment.language.casefold() for segment in source_subtitles}
+    asr_languages = {segment.language.casefold() for segment in independent_asr}
+    if source_languages != asr_languages:
+        reasons.append("LANGUAGE_DISAGREEMENT")
+    return IndependentAsrComparison(
+        "REVIEW_REQUIRED" if reasons else "AGREE_UNVERIFIED",
+        tuple(reasons), round(ratio, 4),
+        len(source_subtitles), len(independent_asr),
+    )
+
+
+def _comparison_tokens(segments: Sequence[TranscriptSegment]) -> tuple[str, ...]:
+    return tuple(
+        token.casefold()
+        for segment in segments
+        for token in re.findall(r"(?u)[^\W_]+(?:[-_][^\W_]+)*", segment.text)
+    )
 
 
 def transcript_to_jsonl(segments: Sequence[TranscriptSegment]) -> str:
