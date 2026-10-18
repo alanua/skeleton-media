@@ -57,3 +57,30 @@ through the established Gate, make SonaBridge injection part of one shared
 media worker, add a transcript-only operation that does not call vision,
 semantic LLM or MemoryGateway, test offline workstation and timeout behavior,
 and validate private audio scratch cleanup. **No activation from this draft.**
+
+## Transcript-only pipeline path (further stacked source-only draft)
+
+VideoPipeline.transcribe_only(source, approval_ref, mode=QUICK,
+verify_with_independent_asr=False) uses the SAME existing intake,
+transcript parser, SonaBackend, and PrivateArtifactStore. It does not create
+a second queue, worker, DB or external executor. It intentionally does not
+call frame extraction/OCR, local LLM, canonical MemoryGateway, or projections.
+QUICK and STANDARD only; ARCHIVE and other modes fail closed.
+
+Private result files: original source cues, normalized.jsonl, readable.jsonl,
+quality.json, verification.json, and (when audio+independent ASR available)
+independent_asr.jsonl and independent_comparison.json. Temporary media/audio
+must not survive finalization. Replay uses the existing immutable, SHA-256
+readback-verified PrivateArtifactStore, with a distinct tr_ namespace and
+a mode/verification-specific identity to avoid full-understanding collisions.
+
+Public-safe receipt contains only counts, structural coverage/verification
+statuses and NOT_USED markers for MemoryGateway, LLM and vision; never source
+URL, title, transcript content, audio, hashes or private paths. Status
+DONE_TRANSCRIPT means only that a structurally usable transcript was safely
+recorded. It DOES NOT mean its words were independently accurate.
+
+An outer Gate approval is mandatory for a live invocation. The approval_ref
+parameter validates presence but does NOT authorize itself. Live runtime
+registration and any changes to deployed services remain prohibited until
+separate explicit human approval and tested canonical Gate wiring.
