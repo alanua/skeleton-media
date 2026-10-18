@@ -44,6 +44,7 @@ from skeleton_media.video_understanding.transcript import (
     TranscriptSegment,
     assess_quality,
     compact_rolling_captions,
+    compare_independent_asr,
     parse_transcript,
     transcript_to_jsonl,
 )
@@ -80,6 +81,14 @@ class PipelineResult:
     mutation_envelope: Mapping[str, Any]
     canonical_result: Mapping[str, Any]
     projection_status: str
+    artifact: FinalizedArtifact
+    public: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class TranscriptOnlyResult:
+    """Readback-verified private transcription; no canonical mutation."""
+
     artifact: FinalizedArtifact
     public: Mapping[str, Any]
 
@@ -158,6 +167,131 @@ class VideoPipeline:
             if bridge_executor is None:
                 raise VideoUnderstandingError("OLLAMA_BRIDGE_REQUIRED", "private Ollama bridge is required")
             self.understanding = PrivateBridgeOllama(bridge_executor, model=config.ollama_model)
+
+
+    def transcribe_only(
+        self,
+        *,
+        source: str,
+        approval_ref: str,
+        mode: ProcessingMode | str = ProcessingMode.QUICK,
+        verify_with_independent_asr: bool = False,
+    ) -> TranscriptOnlyResult:
+        """Opt-in transcript-only branch of the existing media pipeline.
+
+        The caller still needs canonical Gate authorization. Neither Gate
+        registration nor runtime activation is performed by this method.
+        It NEVER invokes vision, local LLM, MemoryGateway, or projections.
+        """
+        if not isinstance(approval_ref, str) or not approval_ref.strip() or len(approval_ref) > 256:
+            raise VideoUnderstandingError("TRANSCRIPT_APPROVAL_REQUIRED", "transcription approval reference required")
+        if not isinstance(verify_with_independent_asr, bool):
+            raise VideoUnderstandingError("ASR_VERIFY_FLAG_INVALID", "ASR verification flag must be boolean")
+        mode_value = ProcessingMode(mode)
+        if mode_value not in {ProcessingMode.QUICK, ProcessingMode.STANDARD}:
+            raise VideoUnderstandingError("TRANSCRIPT_MODE_UNSUPPORTED", "transcription only supports QUICK or STANDARD")
+        classification = classify_local_reference(source) if source.startswith("local-media:") else classify_remote_url(source)
+        identity = "\0".join((
+            classification.normalized_private_source,
+            mode_value.value,
+            "independent_asr" if verify_with_independent_asr else "subtitles_only",
+        ))
+        transcript_record_id = "tr_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+        with self.artifact_store.workspace(transcript_record_id, self.processing_revision) as workspace:
+            acquired = self._acquire(classification.adapter, source, classification, workspace, mode_value)
+            _write_json(workspace / "source.json", _private_source(acquired))
+            _write_json(workspace / "metadata.json", _metadata_dict(acquired.metadata))
+            segments, quality = self._transcript(acquired, workspace)
+            transcript_root = workspace / "transcript"
+            transcript_root.mkdir(exist_ok=True)
+            (transcript_root / "normalized.jsonl").write_text(
+                transcript_to_jsonl(segments), encoding="utf-8"
+            )
+            readable = compact_rolling_captions(segments)
+            (transcript_root / "readable.jsonl").write_text(
+                transcript_to_jsonl(readable), encoding="utf-8"
+            )
+            _write_json(transcript_root / "quality.json", quality.__dict__)
+            reasons: list[str] = []
+            asr_status = "NOT_REQUESTED"
+            if verify_with_independent_asr:
+                if acquired.media_path is None:
+                    asr_status = "AUDIO_UNAVAILABLE"
+                    reasons.append("INDEPENDENT_ASR_AUDIO_UNAVAILABLE")
+                elif not acquired.subtitle_paths:
+                    # _transcript() already used Sona to generate the primary text.
+                    asr_status = "NO_INDEPENDENT_SUBTITLE_REFERENCE"
+                    reasons.append("INDEPENDENT_SUBTITLE_REFERENCE_MISSING")
+                else:
+                    audio_path: Path | None = None
+                    try:
+                        audio_path = self.sona.extract_audio(self.runner, acquired.media_path, workspace)
+                        independent = self.sona.transcribe(audio_path)
+                        (transcript_root / "independent_asr.jsonl").write_text(
+                            transcript_to_jsonl(independent.segments), encoding="utf-8"
+                        )
+                        comparison = compare_independent_asr(segments, independent.segments)
+                        _write_json(transcript_root / "independent_comparison.json", comparison.private_dict())
+                        asr_status = comparison.status
+                        if comparison.status == "REVIEW_REQUIRED":
+                            reasons.extend(comparison.reason_codes)
+                    except VideoUnderstandingError as exc:
+                        asr_status = "FAILED"
+                        reasons.append(exc.reason_code)
+                    finally:
+                        if audio_path is not None:
+                            if workspace not in audio_path.resolve(strict=False).parents:
+                                raise VideoUnderstandingError(
+                                    "TRANSCRIPT_AUDIO_OUTSIDE_WORKSPACE", "ASR audio escaped private workspace"
+                                )
+                            audio_path.unlink(missing_ok=True)
+
+            if not quality.usable:
+                reasons.extend(quality.reason_codes or ("TRANSCRIPT_QUALITY_NOT_GOOD",))
+            _write_json(transcript_root / "verification.json", {
+                "schema": "skeleton.video_transcript.verification.v1",
+                "word_accuracy_status": "UNVERIFIED",
+                "independent_asr": asr_status,
+                "review_reasons": sorted(set(reasons)),
+                "coverage_is_not_word_accuracy": True,
+                "source_cue_count": len(segments),
+                "readable_segment_count": len(readable),
+            })
+            original_root = transcript_root / "original"
+            original_root.mkdir(exist_ok=True)
+            for index, subtitle_path in enumerate(acquired.subtitle_paths):
+                if subtitle_path.exists():
+                    suffix = subtitle_path.suffix.lower() or ".txt"
+                    target = original_root / f"subtitle-{index:03d}{suffix}"
+                    if subtitle_path.resolve() != target.resolve(strict=False):
+                        shutil.move(str(subtitle_path), target)
+            if acquired.media_path is not None and acquired.temporary_media:
+                if workspace not in acquired.media_path.resolve(strict=False).parents:
+                    raise VideoUnderstandingError("TRANSCRIPT_MEDIA_OUTSIDE_WORKSPACE", "media escaped private workspace")
+                acquired.media_path.unlink(missing_ok=True)
+            finalized = self.artifact_store.finalize(
+                workspace,
+                video_record_id=transcript_record_id,
+                processing_revision=self.processing_revision,
+                mode=mode_value,
+            )
+        receipt = {
+            "schema": "skeleton.video_transcript.only_receipt.v1",
+            "status": "DONE_TRANSCRIPT" if not reasons else "REVIEW_REQUIRED",
+            "transcript_count": len(segments),
+            "readable_segment_count": len(readable),
+            "coverage_status": quality.status,
+            "word_accuracy_status": "UNVERIFIED",
+            "independent_asr": asr_status,
+            "review_required": bool(reasons),
+            "canonical_mutation_status": "NOT_USED",
+            "llm_status": "NOT_RUN",
+            "vision_status": "NOT_RUN",
+            "artifact_entry_count": finalized.entry_count,
+            "artifact_readback_verified": True,
+        }
+        return TranscriptOnlyResult(finalized, receipt)
 
     def process(
         self,
