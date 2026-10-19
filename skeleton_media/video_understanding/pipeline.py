@@ -136,19 +136,25 @@ class VideoPipeline:
         config: VideoRuntimeConfig,
         *,
         processing_revision: str,
-        memory_executor: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+        memory_executor: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         projection_executor: Callable[[VideoRecord], Mapping[str, Any]] | None = None,
         runner: BoundedCommandRunner | None = None,
         artifact_store: PrivateArtifactStore | None = None,
         sona: SonaBackend | None = None,
         loopback_llm: LocalLlmClient | None = None,
         bridge_executor: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        transcript_only: bool = False,
         yt_adapter: YtDlpAdapter | None = None,
         direct_adapter: DirectMediaAdapter | None = None,
         local_adapter: LocalFileAdapter | None = None,
     ) -> None:
         if not processing_revision or len(processing_revision) > 128:
             raise VideoUnderstandingError("PROCESSING_REVISION_INVALID", "processing revision is invalid")
+        if not isinstance(transcript_only, bool):
+            raise VideoUnderstandingError("TRANSCRIPT_ONLY_FLAG_INVALID", "transcript-only flag must be boolean")
+        if not transcript_only and memory_executor is None:
+            raise VideoUnderstandingError("MEMORY_EXECUTOR_REQUIRED", "full video processing needs MemoryGateway")
+        self._transcript_only_instance = transcript_only
         self.config = config
         self.processing_revision = processing_revision
         self.memory_executor = memory_executor
@@ -159,14 +165,16 @@ class VideoPipeline:
         self.yt_adapter = yt_adapter or YtDlpAdapter(config, self.runner)
         self.direct_adapter = direct_adapter or DirectMediaAdapter(config)
         self.local_adapter = local_adapter or LocalFileAdapter(config)
-        if config.ollama_transport == "loopback":
-            if loopback_llm is None:
-                raise VideoUnderstandingError("OLLAMA_CLIENT_REQUIRED", "loopback Ollama client is required")
-            self.understanding: UnderstandingProvider = loopback_llm
-        else:
-            if bridge_executor is None:
-                raise VideoUnderstandingError("OLLAMA_BRIDGE_REQUIRED", "private Ollama bridge is required")
-            self.understanding = PrivateBridgeOllama(bridge_executor, model=config.ollama_model)
+        self.understanding: UnderstandingProvider | None = None
+        if not transcript_only:
+            if config.ollama_transport == "loopback":
+                if loopback_llm is None:
+                    raise VideoUnderstandingError("OLLAMA_CLIENT_REQUIRED", "loopback Ollama client is required")
+                self.understanding = loopback_llm
+            else:
+                if bridge_executor is None:
+                    raise VideoUnderstandingError("OLLAMA_BRIDGE_REQUIRED", "private Ollama bridge is required")
+                self.understanding = PrivateBridgeOllama(bridge_executor, model=config.ollama_model)
 
 
     def transcribe_only(
@@ -307,6 +315,11 @@ class VideoPipeline:
         project_hint: str | None = None,
         profile: Domain | str | None = None,
     ) -> PipelineResult:
+        if self._transcript_only_instance:
+            raise VideoUnderstandingError(
+                "TRANSCRIPT_ONLY_FULL_PROCESS_FORBIDDEN",
+                "transcript-only pipeline may not run full understanding",
+            )
         mode_value = ProcessingMode(mode)
         classification = classify_local_reference(source) if source.startswith("local-media:") else classify_remote_url(source)
         video_record_id = "vr_" + hashlib.sha256(
