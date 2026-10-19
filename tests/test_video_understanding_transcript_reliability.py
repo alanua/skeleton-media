@@ -227,3 +227,24 @@ def test_asr_comparison_rejects_bad_bounds_and_language_mismatch() -> None:
         compare_independent_asr(source, asr, review_below_similarity=0)
     with pytest.raises(ValueError):
         compare_independent_asr(source, asr, max_tokens_per_source=3)
+
+
+
+def test_private_bridge_requires_absolute_root_and_offline_failure_is_typed(tmp_path: Path) -> None:
+    with pytest.raises(VideoUnderstandingError) as root_error:
+        PrivateAsrBridgeRequester(
+            lambda packet: {"language": "uk", "segments": []},
+            approved_audio_root=Path("relative-user-audio"),
+            operator_approval_ref="synthetic.operator",
+        )
+    assert root_error.value.reason_code == "ASR_BRIDGE_ROOT_INVALID"
+
+    cfg = _synthetic_config(tmp_path)
+    audio = _synthetic_wav(cfg.temp_root / "offline.wav")
+    unavailable = SonaBackend(
+        cfg,
+        requester=lambda *args: (_ for _ in ()).throw(TimeoutError("private endpoint timed out")),
+    )
+    with pytest.raises(VideoUnderstandingError) as offline_error:
+        unavailable.transcribe(audio)
+    assert offline_error.value.reason_code == "SONA_UNAVAILABLE"
