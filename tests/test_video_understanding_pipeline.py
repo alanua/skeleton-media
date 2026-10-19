@@ -368,3 +368,50 @@ def test_transcribe_only_offline_asr_is_review_and_audio_is_cleaned(tmp_path: Pa
         result.artifact.root / "transcript/verification.json"
     ).read_text()
     unlock(result.artifact.root)
+
+
+
+def test_transcript_only_pipeline_constructs_without_llm_or_memory(tmp_path: Path) -> None:
+    import pytest
+
+    from skeleton_media.video_understanding.models import VideoUnderstandingError
+
+    pipeline = VideoPipeline(
+        config(tmp_path),
+        processing_revision="transcriber-no-llm-no-memory",
+        transcript_only=True,
+        local_adapter=Adapter(),
+    )
+    assert pipeline.understanding is None
+    assert pipeline.memory_executor is None
+    result = pipeline.transcribe_only(
+        source="local-media:abcdefghijklmnop",
+        approval_ref="synthetic.operator",
+    )
+    assert result.public["status"] == "DONE_TRANSCRIPT"
+    with pytest.raises(VideoUnderstandingError) as exc:
+        pipeline.process(
+            source="local-media:abcdefghijklmnop",
+            mode="STANDARD",
+            approval_ref="synthetic.operator",
+        )
+    assert exc.value.reason_code == "TRANSCRIPT_ONLY_FULL_PROCESS_FORBIDDEN"
+    unlock(result.artifact.root)
+
+
+def test_full_pipeline_still_requires_memory_and_llm_injections(tmp_path: Path) -> None:
+    import pytest
+
+    from skeleton_media.video_understanding.models import VideoUnderstandingError
+
+    cfg = config(tmp_path)
+    with pytest.raises(VideoUnderstandingError) as missing_memory:
+        VideoPipeline(cfg, processing_revision="missing-memory")
+    assert missing_memory.value.reason_code == "MEMORY_EXECUTOR_REQUIRED"
+    with pytest.raises(VideoUnderstandingError) as missing_llm:
+        VideoPipeline(
+            cfg,
+            processing_revision="missing-llm",
+            memory_executor=lambda _: {"status": "DONE"},
+        )
+    assert missing_llm.value.reason_code == "OLLAMA_BRIDGE_REQUIRED"
