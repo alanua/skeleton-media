@@ -199,7 +199,11 @@ class VideoPipeline:
         transcript_record_id = "tr_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
         with self.artifact_store.workspace(transcript_record_id, self.processing_revision) as workspace:
-            acquired = self._acquire(classification.adapter, source, classification, workspace, mode_value)
+            # QUICK subtitle intake omits media; an explicit independent ASR
+            # request needs audio, so ask the same bounded adapter for STANDARD.
+            # This changes acquisition only, not the requested transcript mode.
+            acquisition_mode = ProcessingMode.STANDARD if verify_with_independent_asr else mode_value
+            acquired = self._acquire(classification.adapter, source, classification, workspace, acquisition_mode)
             _write_json(workspace / "source.json", _private_source(acquired))
             _write_json(workspace / "metadata.json", _metadata_dict(acquired.metadata))
             segments, quality = self._transcript(acquired, workspace)
