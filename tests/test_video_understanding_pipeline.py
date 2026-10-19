@@ -288,3 +288,83 @@ def test_transcribe_only_rejects_missing_operator_reference_and_archive(tmp_path
             approval_ref="synthetic.operator",
             mode="ARCHIVE",
         )
+
+
+
+def test_transcribe_only_quick_asr_requests_media_without_changing_public_mode(tmp_path: Path) -> None:
+    from skeleton_media.video_understanding.models import ProcessingMode
+
+    modes = []
+
+    class TrackingAdapter(Adapter):
+        def acquire(self, reference, workspace, mode):
+            modes.append(mode)
+            return super().acquire(reference, workspace, mode)
+
+    pipeline = VideoPipeline(
+        config(tmp_path),
+        processing_revision="transcript-quick-verified-acquisition",
+        memory_executor=lambda _: (_ for _ in ()).throw(AssertionError("NO_MEMORY")),
+        bridge_executor=lambda _: (_ for _ in ()).throw(AssertionError("NO_LLM")),
+        local_adapter=TrackingAdapter(),
+    )
+    result = pipeline.transcribe_only(
+        source="local-media:abcdefghijklmnop",
+        approval_ref="synthetic.operator",
+        mode="QUICK",
+        verify_with_independent_asr=True,
+    )
+    # QUICK must not silently skip optional audio when explicitly requested.
+    assert modes == [ProcessingMode.STANDARD]
+    assert result.public["independent_asr"] == "AUDIO_UNAVAILABLE"
+    assert result.public["review_required"] is True
+    unlock(result.artifact.root)
+
+
+def test_transcribe_only_offline_asr_is_review_and_audio_is_cleaned(tmp_path: Path) -> None:
+    from skeleton_media.video_understanding.sona_backend import SonaBackend
+
+    class MediaAdapter(Adapter):
+        def acquire(self, reference, workspace, mode):
+            source = super().acquire(reference, workspace, mode)
+            media = workspace / "synthetic_video.mp4"
+            media.write_bytes(b"not a real media file")
+            return AcquiredSource(
+                source.classification, source.metadata, media,
+                source.subtitle_paths, source.source_sha256, True,
+            )
+
+    cfg = config(tmp_path)
+    asr = SonaBackend(
+        cfg,
+        requester=lambda *args: (_ for _ in ()).throw(ConnectionRefusedError("offline")),
+    )
+
+    def synthetic_audio(runner, media_path, workspace):
+        del runner, media_path
+        audio = workspace / "audio.wav"
+        audio.write_bytes(b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 40)
+        return audio
+
+    asr.extract_audio = synthetic_audio
+    pipeline = VideoPipeline(
+        cfg,
+        processing_revision="transcript-offline-reviewed",
+        memory_executor=lambda _: (_ for _ in ()).throw(AssertionError("NO_MEMORY")),
+        bridge_executor=lambda _: (_ for _ in ()).throw(AssertionError("NO_LLM")),
+        local_adapter=MediaAdapter(),
+        sona=asr,
+    )
+    result = pipeline.transcribe_only(
+        source="local-media:abcdefghijklmnop",
+        approval_ref="synthetic.operator",
+        verify_with_independent_asr=True,
+    )
+    assert result.public["status"] == "REVIEW_REQUIRED"
+    assert result.public["independent_asr"] == "FAILED"
+    assert not (result.artifact.root / "audio.wav").exists()
+    assert not (result.artifact.root / "synthetic_video.mp4").exists()
+    assert "SONA_UNAVAILABLE" in (
+        result.artifact.root / "transcript/verification.json"
+    ).read_text()
+    unlock(result.artifact.root)
