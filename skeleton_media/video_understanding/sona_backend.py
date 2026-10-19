@@ -80,8 +80,6 @@ class SonaBackend:
                 self.config.limits.subprocess_output_bytes,
             )
         except (OSError, TimeoutError, http.client.HTTPException) as exc:
-            # Workstation offline / loopback refusal is a REVIEW state, not
-            # an unhandled exception containing private connection details.
             raise VideoUnderstandingError("SONA_UNAVAILABLE", "independent local ASR is unavailable") from exc
         language = str(payload.get("language") or "und")[:32]
         raw_segments = payload.get("segments")
