@@ -92,3 +92,159 @@ def test_invalid_compaction_bounds_fail_closed() -> None:
             pass
         else:
             raise AssertionError("invalid compaction limits must be rejected")
+
+
+
+# The bridge is never connected to a real network, device, or model in CI.
+from pathlib import Path
+
+import pytest
+
+from skeleton_media.video_understanding.models import VideoUnderstandingError
+from skeleton_media.video_understanding.runtime_config import RuntimeLimits, VideoRuntimeConfig
+from skeleton_media.video_understanding.sona_backend import PrivateAsrBridgeRequester, SonaBackend
+from skeleton_media.video_understanding.transcript import compare_independent_asr
+
+
+def _synthetic_config(tmp_path: Path) -> VideoRuntimeConfig:
+    local = tmp_path / "local"
+    local.mkdir()
+    source = local / "sample.mp4"
+    source.write_bytes(b"synthetic")
+    return VideoRuntimeConfig(
+        artifact_root=tmp_path / "artifact",
+        queue_root=tmp_path / "queue",
+        temp_root=tmp_path / "scratch",
+        approved_local_roots=(local,),
+        local_media_registry={"abcdefghijklmnop": source},
+        direct_media_allowed_hosts=(),
+        executables={key: f"/{key}" for key in ("yt_dlp", "ffmpeg", "ffprobe", "sona", "ocr")},
+        ollama_transport="private_bridge",
+        ollama_model="synthetic",
+        limits=RuntimeLimits(lease_seconds=30),
+    )
+
+
+def _synthetic_wav(path: Path, *, bytes_count: int = 1_048_576) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * (bytes_count - 12))
+    return path
+
+
+def test_private_asr_bridge_is_bounded_and_injected(tmp_path: Path) -> None:
+    config = _synthetic_config(tmp_path)
+    audio = _synthetic_wav(config.temp_root / "audio.wav")
+    calls = []
+
+    def approved_executor(packet):
+        calls.append(packet)
+        return {
+            "language": "uk",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "Синтетичний текст"}],
+            "private_path": "/never/share",
+        }
+
+    requester = PrivateAsrBridgeRequester(
+        approved_executor, approved_audio_root=config.temp_root, operator_approval_ref="synthetic.operator.v1"
+    )
+    result = SonaBackend(config, requester=requester).transcribe(audio)
+    assert result.language == "uk" and result.segments[0].text == "Синтетичний текст"
+    assert len(calls) == 1
+    assert calls[0]["audio_wav"] == audio.read_bytes()
+    assert calls[0]["operator_approval_ref"] == "synthetic.operator.v1"
+    assert "private_path" not in requester(
+        config.sona_endpoint, config.sona_model, audio,
+        config.limits.subprocess_timeout_seconds, config.limits.subprocess_output_bytes
+    )
+
+
+def test_private_asr_bridge_rejects_unapproved_audio_and_malformed_data(tmp_path: Path) -> None:
+    cfg = _synthetic_config(tmp_path)
+    root = cfg.temp_root
+    allowed = _synthetic_wav(root / "good.wav")
+    outside = _synthetic_wav(tmp_path / "outside.wav")
+    malformed = root / "bad.wav"
+    malformed.write_bytes(b"NOT_WAVE" + b"x" * 1_048_576)
+    no_calls = []
+
+    def executor(packet):
+        no_calls.append(packet)
+        return {"language": "uk", "segments": []}
+
+    bridge = PrivateAsrBridgeRequester(
+        executor, approved_audio_root=root, operator_approval_ref="synthetic.operator.v1"
+    )
+    for path in (outside, malformed):
+        with pytest.raises(VideoUnderstandingError):
+            bridge(cfg.sona_endpoint, cfg.sona_model, path, 10, 4096)
+    assert no_calls == []
+    with pytest.raises(VideoUnderstandingError):
+        PrivateAsrBridgeRequester(executor, approved_audio_root=root, operator_approval_ref="")
+    with pytest.raises(VideoUnderstandingError):
+        bridge("http://remote.example:8080", "default", allowed, 10, 4096)
+
+    invalid = PrivateAsrBridgeRequester(
+        lambda _: {"segments": "invalid"}, approved_audio_root=root,
+        operator_approval_ref="synthetic.operator.v1",
+    )
+    with pytest.raises(VideoUnderstandingError):
+        invalid(cfg.sona_endpoint, cfg.sona_model, allowed, 10, 4096)
+
+
+def test_independent_asr_never_claims_ground_truth() -> None:
+    subtitles = (
+        cue(0, 2, "Цей ноутбук має RTX 3050"),
+        cue(2, 4, "Також у нього 16 ГБ RAM"),
+    )
+    identical = (
+        cue(0, 2, "Цей ноутбук має RTX 3050", "uk", "sona"),
+        cue(2, 4, "Також у нього 16 ГБ RAM", "uk", "sona"),
+    )
+    same = compare_independent_asr(subtitles, identical)
+    assert same.status == "AGREE_UNVERIFIED"
+    assert same.reason_codes == ()
+    assert same.token_sequence_similarity == 1.0
+
+    disagreement = (
+        cue(0, 2, "Цей ноутбук має ZX 3050", "uk", "sona"),
+        cue(2, 4, "Також у нього 60 ГБ RAM", "uk", "sona"),
+    )
+    changed = compare_independent_asr(subtitles, disagreement)
+    assert changed.status == "REVIEW_REQUIRED"
+    assert "TECHNICAL_MENTION_DISAGREEMENT" in changed.reason_codes
+    assert changed.token_sequence_similarity is not None
+    assert compare_independent_asr(subtitles, ()).status == "REVIEW_REQUIRED"
+    assert compare_independent_asr((), identical).status == "REVIEW_REQUIRED"
+
+
+def test_asr_comparison_rejects_bad_bounds_and_language_mismatch() -> None:
+    source = (cue(0, 2, "one two three", "en"),)
+    asr = (cue(0, 2, "one two three", "de", "sona"),)
+    changed = compare_independent_asr(source, asr)
+    assert changed.status == "REVIEW_REQUIRED"
+    assert "LANGUAGE_DISAGREEMENT" in changed.reason_codes
+    with pytest.raises(ValueError):
+        compare_independent_asr(source, asr, review_below_similarity=0)
+    with pytest.raises(ValueError):
+        compare_independent_asr(source, asr, max_tokens_per_source=3)
+
+
+
+def test_private_bridge_requires_absolute_root_and_offline_failure_is_typed(tmp_path: Path) -> None:
+    with pytest.raises(VideoUnderstandingError) as root_error:
+        PrivateAsrBridgeRequester(
+            lambda packet: {"language": "uk", "segments": []},
+            approved_audio_root=Path("relative-user-audio"),
+            operator_approval_ref="synthetic.operator",
+        )
+    assert root_error.value.reason_code == "ASR_BRIDGE_ROOT_INVALID"
+
+    cfg = _synthetic_config(tmp_path)
+    audio = _synthetic_wav(cfg.temp_root / "offline.wav")
+    unavailable = SonaBackend(
+        cfg,
+        requester=lambda *args: (_ for _ in ()).throw(TimeoutError("private endpoint timed out")),
+    )
+    with pytest.raises(VideoUnderstandingError) as offline_error:
+        unavailable.transcribe(audio)
+    assert offline_error.value.reason_code == "SONA_UNAVAILABLE"
