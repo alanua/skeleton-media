@@ -234,6 +234,71 @@ def assess_quality(
     return TranscriptQuality(status, tuple(reasons), len(segments), character_count, duration, covered, ratio)
 
 
+
+def compact_rolling_captions(
+    segments: Sequence[TranscriptSegment],
+    *,
+    max_gap_seconds: float = 3.0,
+    max_lookback_words: int = 128,
+) -> tuple[TranscriptSegment, ...]:
+    """Create readable, timestamped text without altering the source cues.
+
+    Automatic subtitles can repeat a growing phrase in consecutive cues.
+    Remove only an exact *multiword* suffix/prefix overlap near the preceding
+    cue. Never rewrite model names, numbers, languages, or uncertain words.
+    Consumers must retain the original cues separately for audit/readback.
+    """
+    if not (0 <= max_gap_seconds <= 30):
+        raise ValueError("max_gap_seconds must be between 0 and 30")
+    if not (2 <= max_lookback_words <= 512):
+        raise ValueError("max_lookback_words must be between 2 and 512")
+    output: list[TranscriptSegment] = []
+    tail: list[str] = []
+    previous: TranscriptSegment | None = None
+    for segment in segments:
+        words = segment.text.split()
+        comparable = [_overlap_token(word) for word in words]
+        adjacent = (
+            previous is not None
+            and segment.start_seconds >= previous.start_seconds
+            and segment.start_seconds <= previous.end_seconds + max_gap_seconds
+            and segment.language == previous.language
+            and segment.provider == previous.provider
+        )
+        if not adjacent:
+            tail = []
+        overlap = 0
+        if adjacent and len(words) >= 2 and len(tail) >= 2:
+            max_overlap = min(len(comparable), len(tail), max_lookback_words)
+            for count in range(max_overlap, 1, -1):
+                if all(comparable[i] for i in range(count)) and tail[-count:] == comparable[:count]:
+                    overlap = count
+                    break
+        if overlap < len(words):
+            readable = " ".join(words[overlap:])
+            output.append(
+                TranscriptSegment(
+                    segment.start_seconds,
+                    segment.end_seconds,
+                    readable,
+                    segment.language,
+                    segment.provider,
+                    segment.confidence,
+                    segment.provenance if not overlap else segment.provenance + ":rolling_overlap_removed",
+                )
+            )
+            tail.extend(comparable[overlap:])
+            if len(tail) > max_lookback_words:
+                tail = tail[-max_lookback_words:]
+        previous = segment
+    return tuple(output)
+
+
+def _overlap_token(word: str) -> str:
+    # Unicode-aware: accents, Cyrillic and digits remain meaningful.
+    return re.sub(r"^\W+|\W+$", "", word, flags=re.UNICODE).casefold()
+
+
 def transcript_to_jsonl(segments: Sequence[TranscriptSegment]) -> str:
     return "".join(json.dumps(segment.to_dict(), ensure_ascii=False, sort_keys=True) + "\n" for segment in segments)
 
