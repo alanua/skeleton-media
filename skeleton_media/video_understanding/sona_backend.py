@@ -71,13 +71,18 @@ class SonaBackend:
         return target
 
     def transcribe(self, audio_path: Path) -> SonaResult:
-        payload = self._requester(
-            self.config.sona_endpoint,
-            self.config.sona_model,
-            audio_path,
-            self.config.limits.subprocess_timeout_seconds,
-            self.config.limits.subprocess_output_bytes,
-        )
+        try:
+            payload = self._requester(
+                self.config.sona_endpoint,
+                self.config.sona_model,
+                audio_path,
+                self.config.limits.subprocess_timeout_seconds,
+                self.config.limits.subprocess_output_bytes,
+            )
+        except (OSError, TimeoutError, http.client.HTTPException) as exc:
+            # Workstation offline / loopback refusal is a REVIEW state, not
+            # an unhandled exception containing private connection details.
+            raise VideoUnderstandingError("SONA_UNAVAILABLE", "independent local ASR is unavailable") from exc
         language = str(payload.get("language") or "und")[:32]
         raw_segments = payload.get("segments")
         if not isinstance(raw_segments, list):
@@ -120,9 +125,10 @@ class PrivateAsrBridgeRequester:
     ) -> None:
         if not callable(executor):
             raise VideoUnderstandingError("ASR_BRIDGE_EXECUTOR_REQUIRED", "private ASR executor is required")
-        root = Path(approved_audio_root).expanduser().resolve(strict=False)
-        if not root.is_absolute():
+        root_input = Path(approved_audio_root).expanduser()
+        if not root_input.is_absolute():
             raise VideoUnderstandingError("ASR_BRIDGE_ROOT_INVALID", "ASR audio root must be absolute")
+        root = root_input.resolve(strict=False)
         if not isinstance(operator_approval_ref, str) or not operator_approval_ref.strip() or len(operator_approval_ref) > 256:
             raise VideoUnderstandingError("ASR_BRIDGE_APPROVAL_REQUIRED", "ASR operator approval is required")
         if isinstance(max_audio_bytes, bool) or not 1_048_576 <= max_audio_bytes <= 256 * 1024 * 1024:
