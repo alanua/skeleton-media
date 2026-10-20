@@ -84,3 +84,30 @@ An outer Gate approval is mandatory for a live invocation. The approval_ref
 parameter validates presence but does NOT authorize itself. Live runtime
 registration and any changes to deployed services remain prohibited until
 separate explicit human approval and tested canonical Gate wiring.
+
+## Typed transcript-only ingress proposal (source-only, NOT REGISTERED)
+
+`plan_operation("video_transcribe_url", {"url": ..., "mode": "QUICK",
+"verify_with_independent_asr": false})` is a synthetic-safe plan for
+calling the already-merged `VideoPipeline.transcribe_only()` method.
+It does not run the video URL, download media, run ASR, alter the queue,
+or configure a new capability. Modes QUICK and STANDARD only.
+
+This plan deliberately states `operator_gate_required=true`,
+`runtime_registered=false`, `executor_policy=EXISTING_SHARED_MEDIA_WORKER_ONLY`,
+`canonical_mutation=NOT_USED`, `local_llm_policy=NOT_USED`,
+`network_execution=false`, and `media_execution=false`. The public
+receipt is sanitized and contains no URL, content or private path.
+The payload does not accept an operator-approval reference, arbitrary
+backend command, credential or output path: a trusted Gate must inject
+caller identity and enforce authorization independently.
+
+**This source contract DOES NOT publish a ninth operation in Skeleton Core**
+or make the module usable in ChatGPT. Protected Skeleton #4788 must
+explicitly decide whether to expose this ninth typed action in the
+same global provider as the existing eight full video operations;
+it must not be treated as a separate service, queue or MemoryGateway.
+Before runtime enablement, verify exactly one authorized executor,
+private payload transport/response, Home Edge non-playback interference,
+offline-ASR fail closed, queue authority, provider pin freshness,
+and no private media or transcript values in public receipts.
