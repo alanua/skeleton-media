@@ -29,6 +29,37 @@ OPERATIONS = frozenset(
         "video_attach_to_project",
     }
 )
+
+
+GLOBAL_CAPABILITY_ID = "skeleton.video_understanding"
+
+
+def shared_capability_inventory() -> dict[str, Any]:
+    """Public-safe contract for ONE shared Skeleton capability across ancillaries.
+
+    This is documentation/discovery data, not a runtime registration or proof
+    of readiness. Central Skeleton Gate registration is a separately approved
+    protected change. A profile affects content routing, never caller identity.
+    """
+    from skeleton_media.video_understanding.compatibility import DIOS_OPERATION_MAP
+
+    return {
+        "schema": "skeleton.video_understanding.shared_capability.v1",
+        "capability_id": GLOBAL_CAPABILITY_ID,
+        "repository": "alanua/skeleton-media",
+        "scope": "ALL_AUTHORIZED_ANCILLARIES_AND_CHAT_BRANCHES",
+        "registration_status": "CONTROL_PLANE_ATTESTATION_REQUIRED",
+        "runtime_activation": "NOT_ASSERTED_BY_SOURCE_CONTRACT",
+        "single_backend_required": True,
+        "single_active_worker_required": True,
+        "canonical_storage": "MEMORY_GATEWAY_ONLY",
+        "profile_optional": True,
+        "profiles": sorted(domain.value for domain in Domain),
+        "operations": sorted(OPERATIONS),
+        "compatibility_aliases": dict(sorted(DIOS_OPERATION_MAP.items())),
+        "public_output_policy": "AGGREGATE_ONLY",
+    }
+
 _VIDEO_RECORD_ID_RE = re.compile(r"^vr_[A-Za-z0-9_-]{5,157}$")
 _FORBIDDEN_FIELDS = frozenset(
     {
