@@ -20,6 +20,7 @@ from skeleton_media.video_understanding.url_classifier import classify_remote_ur
 OPERATIONS = frozenset(
     {
         "video_understand_url",
+        "video_transcribe_url",
         "video_import_urls",
         "video_process_one",
         "video_status",
@@ -51,6 +52,7 @@ _FORBIDDEN_FIELDS = frozenset(
 )
 _ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "video_understand_url": frozenset({"url", "project_hint", "question", "mode", "depth", "profile"}),
+    "video_transcribe_url": frozenset({"url", "mode", "verify_with_independent_asr"}),
     "video_import_urls": frozenset({"urls", "project_hint", "mode", "depth", "profile"}),
     "video_process_one": frozenset({"video_record_id", "mode", "question", "depth", "profile"}),
     "video_status": frozenset({"video_record_id"}),
@@ -74,6 +76,8 @@ def plan_operation(operation: str, payload: Mapping[str, Any]) -> dict[str, Any]
         )
     reject_unknown_fields(payload, _ALLOWED_FIELDS[operation])
 
+    if operation == "video_transcribe_url":
+        return _plan_transcribe_url(payload)
     if operation == "video_understand_url":
         return _plan_understand_url(payload)
     if operation == "video_import_urls":
@@ -203,6 +207,58 @@ def _plan_understand_url(payload: Mapping[str, Any]) -> dict[str, Any]:
             override_applied=route.override_applied,
         ),
         "public_receipt": _public_plan(request.operation, mode, source.reason_code, domain=route.selected),
+    }
+
+
+
+
+def _plan_transcribe_url(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Plan a Gate-authorized transcript-only invocation, never execute it.
+
+    The control-plane caller must bind identity, per-request authorization,
+    private transport, and the existing single-worker route separately.
+    A planning receipt is not permission to run or to alter the media host.
+    """
+    raw_url = payload.get("url")
+    if not isinstance(raw_url, str):
+        raise VideoUnderstandingError("URL_REQUIRED", "URL is required")
+    source = classify_remote_url(raw_url)
+    mode = _mode(payload, ProcessingMode.QUICK)
+    if mode not in {ProcessingMode.QUICK, ProcessingMode.STANDARD}:
+        raise VideoUnderstandingError(
+            "TRANSCRIPT_MODE_UNSUPPORTED",
+            "transcription only supports QUICK or STANDARD",
+        )
+    independent_asr = payload.get("verify_with_independent_asr", False)
+    if not isinstance(independent_asr, bool):
+        raise VideoUnderstandingError(
+            "ASR_VERIFY_FLAG_INVALID",
+            "independent ASR flag must be boolean",
+        )
+    return {
+        "private_plan": {
+            "schema": "skeleton.video_understanding.operation_plan.v1",
+            "operation": "video_transcribe_url",
+            "pipeline_entrypoint": "VideoPipeline.transcribe_only",
+            "source": asdict(source),
+            "mode": mode.value,
+            "verify_with_independent_asr": independent_asr,
+            "operator_gate_required": True,
+            "runtime_registered": False,
+            "executor_policy": "EXISTING_SHARED_MEDIA_WORKER_ONLY",
+            "local_llm_policy": "NOT_USED",
+            "canonical_mutation": "NOT_USED",
+            "network_execution": False,
+            "media_execution": False,
+        },
+        "public_receipt": public_receipt(
+            operation="video_transcribe_url",
+            status="PLANNED",
+            reason_code=source.reason_code,
+            mode=mode,
+            canonical_mutation_status="NOT_USED",
+            projection_status="NOT_USED",
+        ),
     }
 
 
