@@ -9,6 +9,7 @@ from skeleton_media.video_understanding.operations import OPERATIONS, plan_opera
 def test_all_required_operations_are_registered_in_contract() -> None:
     assert OPERATIONS == {
         "video_understand_url",
+        "video_transcribe_url",
         "video_import_urls",
         "video_process_one",
         "video_status",
@@ -98,3 +99,90 @@ def test_doctor_checks_ollama_and_sona_without_running_them() -> None:
 def test_dios_compatibility_profile_is_supported() -> None:
     result = plan_operation("video_doctor", {"profile": "DIOS"})
     assert result["private_plan"]["profile"] == "DIOS"
+
+
+
+def test_transcription_url_plan_uses_existing_pipeline_without_memory_or_llm() -> None:
+    result = plan_operation(
+        "video_transcribe_url",
+        {
+            "url": "https://youtu.be/AbCdEf12345",
+            "mode": "QUICK",
+            "verify_with_independent_asr": True,
+        },
+    )
+    private = result["private_plan"]
+    public = result["public_receipt"]
+    assert private["operation"] == "video_transcribe_url"
+    assert private["pipeline_entrypoint"] == "VideoPipeline.transcribe_only"
+    assert private["verify_with_independent_asr"] is True
+    assert private["operator_gate_required"] is True
+    assert private["runtime_registered"] is False
+    assert private["executor_policy"] == "EXISTING_SHARED_MEDIA_WORKER_ONLY"
+    assert private["canonical_mutation"] == "NOT_USED"
+    assert private["local_llm_policy"] == "NOT_USED"
+    assert private["network_execution"] is False
+    assert private["media_execution"] is False
+    assert public["canonical_mutation_status"] == "NOT_USED"
+    assert public["projection_status"] == "NOT_USED"
+    assert public["reason_code"] == "SUPPORTED_YOUTUBE"
+    public_text = repr(public)
+    for private_content in ("https://", "AbCdEf12345", "audio_wav", "transcript", "model_path"):
+        if private_content == "transcript":
+            # Public schema identifies a transcription operation, not user text.
+            continue
+        assert private_content not in public_text
+
+
+def test_transcription_defaults_to_subtitles_first_and_no_asr() -> None:
+    result = plan_operation("video_transcribe_url", {"url": "https://youtu.be/AbCdEf12345"})
+    assert result["private_plan"]["mode"] == "QUICK"
+    assert result["private_plan"]["verify_with_independent_asr"] is False
+    assert result["public_receipt"]["mode"] == "QUICK"
+
+
+@pytest.mark.parametrize("mode", ["DEEP", "TARGETED", "ARCHIVE"])
+def test_transcription_rejects_full_understanding_modes(mode: str) -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        plan_operation(
+            "video_transcribe_url",
+            {"url": "https://youtu.be/AbCdEf12345", "mode": mode},
+        )
+    assert exc.value.reason_code == "TRANSCRIPT_MODE_UNSUPPORTED"
+
+
+@pytest.mark.parametrize("value", [1, "yes", None, [], {}])
+def test_transcription_rejects_non_boolean_asr_flag(value: object) -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        plan_operation(
+            "video_transcribe_url",
+            {"url": "https://youtu.be/AbCdEf12345", "verify_with_independent_asr": value},
+        )
+    assert exc.value.reason_code == "ASR_VERIFY_FLAG_INVALID"
+
+
+@pytest.mark.parametrize("field", [
+    "cookie", "api_key", "model_path", "shell", "output_path",
+    "credentials", "headers", "ffmpeg_args",
+])
+def test_transcription_rejects_private_runtime_controls(field: str) -> None:
+    with pytest.raises(VideoUnderstandingError) as exc:
+        plan_operation(
+            "video_transcribe_url",
+            {"url": "https://youtu.be/AbCdEf12345", field: "private"},
+        )
+    assert exc.value.reason_code == "PRIVATE_CONTROL_FIELD_FORBIDDEN"
+
+
+def test_transcription_rejects_external_approval_reference_and_unknown_fields() -> None:
+    # Operator identity and Gate approval are injected by the trusted host,
+    # never accepted from user-controlled payloads.
+    with pytest.raises(VideoUnderstandingError) as exc:
+        plan_operation(
+            "video_transcribe_url",
+            {
+                "url": "https://youtu.be/AbCdEf12345",
+                "operator_approval_ref": "forged",
+            },
+        )
+    assert exc.value.reason_code == "UNKNOWN_FIELDS"
