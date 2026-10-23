@@ -91,18 +91,34 @@ def main(argv: list[str] | None = None) -> int:
         approval_ref = os.environ.get("SKELETON_VIDEO_APPROVAL_REF", "")
         if not approval_ref:
             raise VideoUnderstandingError("APPROVAL_REF_REQUIRED", "private operator approval reference is required")
-        queued = queue.enqueue(
-            operation="video_process_one",
-            payload={
-                "source": source,
-                "approval_ref": approval_ref,
-                "mode": private["mode"],
-                "question": private.get("question"),
-                "project_hint": private.get("project_hint"),
-                "profile": private.get("profile"),
-            },
-            idempotency_key=f"{operation}:{source}:{private['mode']}:{private.get('question') or ''}",
-        )
+        if operation == "video_transcribe_url":
+            # Use the existing shared queue, but preserve the dedicated
+            # transcript-only operation and verification setting. This is
+            # not a Gate authorization or a runtime activation.
+            verify = private["verify_with_independent_asr"]
+            queued = queue.enqueue(
+                operation="video_transcribe_url",
+                payload={
+                    "source": source,
+                    "approval_ref": approval_ref,
+                    "mode": private["mode"],
+                    "verify_with_independent_asr": verify,
+                },
+                idempotency_key=f"{operation}:{source}:{private['mode']}:{verify}",
+            )
+        else:
+            queued = queue.enqueue(
+                operation="video_process_one",
+                payload={
+                    "source": source,
+                    "approval_ref": approval_ref,
+                    "mode": private["mode"],
+                    "question": private.get("question"),
+                    "project_hint": private.get("project_hint"),
+                    "profile": private.get("profile"),
+                },
+                idempotency_key=f"{operation}:{source}:{private['mode']}:{private.get('question') or ''}",
+            )
         _safe_print(
             {
                 "schema": "skeleton.video_understanding.enqueue_receipt.v1",
