@@ -183,14 +183,18 @@ def parse_timestamp(value: str) -> float:
 
 
 def normalize_segments(segments: Iterable[TranscriptSegment]) -> tuple[TranscriptSegment, ...]:
-    ordered = sorted(tuple(segments), key=lambda item: (item.start_seconds, item.end_seconds, item.text))
+    # Retain the observed cue order: sorting first would silently conceal
+    # malformed/non-monotonic subtitle timestamps and change the source evidence.
     result: list[TranscriptSegment] = []
-    for segment in ordered:
+    for segment in segments:
         if result and segment.start_seconds < result[-1].start_seconds:
             raise VideoUnderstandingError("TRANSCRIPT_NOT_MONOTONIC", "transcript order is invalid")
         if (
             result
             and segment.text.casefold() == result[-1].text.casefold()
+            and segment.language == result[-1].language
+            and segment.provider == result[-1].provider
+            and segment.provenance == result[-1].provenance
             and segment.start_seconds <= result[-1].end_seconds
         ):
             previous = result[-1]
