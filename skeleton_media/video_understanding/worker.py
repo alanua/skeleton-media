@@ -75,6 +75,21 @@ class VideoWorker:
                         recovered=recovered,
                     )
             self.queue.complete(record.record_id, self.worker_id)
+            if record.operation == "video_transcribe_url":
+                # Only aggregate transcription status is public. The private
+                # transcript and raw media never enter the worker receipt.
+                return {
+                    **self._public("DONE", "TRANSCRIPT_PROCESSED", recovered=recovered),
+                    "processing_status": result.public["status"],
+                    "review_required": result.public["review_required"],
+                    "canonical_mutation_status": result.public["canonical_mutation_status"],
+                    "transcript_count": result.public["transcript_count"],
+                    "readable_segment_count": result.public["readable_segment_count"],
+                    "word_accuracy_status": result.public["word_accuracy_status"],
+                    "independent_asr": result.public["independent_asr"],
+                    "llm_status": result.public["llm_status"],
+                    "vision_status": result.public["vision_status"],
+                }
             return {
                 **self._public("DONE", "VIDEO_PROCESSED", recovered=recovered),
                 "processing_status": result.public["status"],
@@ -123,6 +138,8 @@ class VideoWorker:
                 del recovered
 
     def _execute(self, record: QueueRecord):
+        if record.operation not in {"video_process_one", "video_transcribe_url"}:
+            raise VideoUnderstandingError("INVALID_QUEUE_OPERATION", "queue operation is unsupported")
         payload = record.payload
         source = payload.get("source")
         approval_ref = payload.get("approval_ref")
@@ -132,6 +149,25 @@ class VideoWorker:
             mode = ProcessingMode(payload.get("mode", "STANDARD"))
         except (TypeError, ValueError) as exc:
             raise VideoUnderstandingError("INVALID_MODE", "queue mode is invalid") from exc
+        if record.operation == "video_transcribe_url":
+            # A schema-typed, separately gated caller must supply this
+            # specific queue payload. Extra fields cannot select other
+            # pipelines, models, output paths or execution modes.
+            if set(payload) != {"source", "approval_ref", "mode", "verify_with_independent_asr"}:
+                raise VideoUnderstandingError("INVALID_TRANSCRIPT_PAYLOAD", "transcript queue payload invalid")
+            if mode not in {ProcessingMode.QUICK, ProcessingMode.STANDARD}:
+                raise VideoUnderstandingError("INVALID_TRANSCRIPT_MODE", "transcription mode invalid")
+            verify = payload["verify_with_independent_asr"]
+            if not isinstance(verify, bool):
+                raise VideoUnderstandingError("INVALID_TRANSCRIPT_VERIFY", "ASR verification flag invalid")
+            if not approval_ref.strip():
+                raise VideoUnderstandingError("INVALID_TRANSCRIPT_APPROVAL", "private approval reference required")
+            return self.pipeline.transcribe_only(
+                source=source,
+                mode=mode,
+                approval_ref=approval_ref,
+                verify_with_independent_asr=verify,
+            )
         profile_raw = payload.get("profile")
         try:
             profile = Domain(profile_raw) if profile_raw is not None else None
