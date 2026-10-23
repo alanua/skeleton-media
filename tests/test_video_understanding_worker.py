@@ -122,14 +122,14 @@ def test_transcript_only_worker_dispatch_is_bounded_and_public_safe(tmp_path: Pa
 
 
 def test_transcript_only_rejects_untrusted_queue_payload_and_unknown_operation(tmp_path: Path) -> None:
-    for index, payload in enumerate((
+    for index, case_payload in enumerate((
         {"source": "local-media:abcdefghijklmnop", "approval_ref": "synthetic.operator", "mode": "QUICK", "verify_with_independent_asr": "true"},
         {"source": "local-media:abcdefghijklmnop", "approval_ref": "synthetic.operator", "mode": "ARCHIVE", "verify_with_independent_asr": False},
         {"source": "local-media:abcdefghijklmnop", "approval_ref": "synthetic.operator", "mode": "QUICK", "verify_with_independent_asr": False, "shell": "forbidden"},
         {"source": "local-media:abcdefghijklmnop", "approval_ref": "", "mode": "QUICK", "verify_with_independent_asr": False},
     )):
         queue = FileQueue(config(tmp_path / f"case-{index}"))
-        queue.enqueue(operation="video_transcribe_url", payload=payload, idempotency_key=f"bad-{index}")
+        queue.enqueue(operation="video_transcribe_url", payload=case_payload, idempotency_key=f"bad-{index}")
         pipeline = TranscriptPipeline()
         receipt = VideoWorker(queue, pipeline, worker_id="worker-1").run_once()
         assert receipt["status"] == "QUARANTINED"
@@ -145,7 +145,15 @@ def test_transcript_only_rejects_untrusted_queue_payload_and_unknown_operation(t
 def test_cli_enqueues_transcript_only_without_colliding_asr_identity(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:
-    from scripts import video_understanding as cli
+    # Core also contains scripts/video_understanding.py in CI. Load the
+    # exact media repo CLI, not an unrelated checkout's namespace package.
+    import importlib.util
+
+    cli_path = Path(__file__).resolve().parents[1] / "scripts" / "video_understanding.py"
+    spec = importlib.util.spec_from_file_location("media_video_transcript_cli_test", cli_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
 
     cfg = config(tmp_path)
     monkeypatch.setattr(cli, "load_runtime_config", lambda path: cfg)
