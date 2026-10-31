@@ -343,14 +343,95 @@ def _history_item_key(item: dict) -> str:
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
 
 
+def _history_page_url(value: object) -> str | None:
+    """Check explicit webpage metadata offline; omit uncertain links, never repair.
+
+    No DNS or site-registry calls: projection must have no external side effects.
+    """
+    from urllib.parse import unquote
+    if not isinstance(value, str) or not value or len(value) > 2048:
+        return None
+    decoded = unquote(value).lower()
+    if any(ord(c) < 33 or ord(c) == 127 for c in value + decoded) or any(c in decoded for c in ('\\', '@', '#')):
+        return None
+    try:
+        url = urlparse(value)
+        host = (url.hostname or '').lower().rstrip('.')
+        if url.scheme not in ('http', 'https') or url.username or url.password or url.port not in (None, 80, 443):
+            return None
+        if not re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+', host) or host.rsplit('.', 1)[-1].isdigit():
+            return None
+        if host.endswith(('.local', '.localhost', '.internal', '.lan', '.home', '.test', '.invalid', '.ts.net', '.onion')):
+            return None
+        if re.search(r'(?:^|[./_-])(cdn|stream|hls|dash|manifest|playlist|embed|player)(?:[./_-]|$)', host + url.path.lower()):
+            return None
+        if re.search(r'\.(?:m3u8?|mpd|mp4|mkv|webm|ts|mp3|aac)(?:$|[/;?])', decoded):
+            return None
+        if re.search(r'token|secret|password|credential|signature|authorization|api[_-]?key|session|bearer', decoded):
+            return None
+        # Only the public YouTube video identifier is an accepted query value.
+        if url.query and not (host in ('youtube.com', 'www.youtube.com', 'm.youtube.com') and url.path == '/watch' and re.fullmatch(r'v=[A-Za-z0-9_-]{11}', url.query)):
+            return None
+        if re.search(r'[A-Za-z0-9_=-]{48,}', url.path):
+            return None
+    except ValueError:
+        return None
+    return value
+
+
+def _history_provenance(job: dict, source: dict) -> dict:
+    # Generic url, origin_url and Referer may identify a stream/player, not a page.
+    pages = []
+    for key in ('source_page_url', 'discovery_page_url', 'history_page_url', 'page_url'):
+        page = _history_page_url(source.get(key))
+        if page and page not in pages:
+            pages.append(page)
+    sites = source.get('source_sites')
+    if isinstance(sites, list):
+        for value in sites[:16]:
+            page = (_history_page_url(value.get('source_page_url')) or _history_page_url(value.get('page_url'))
+                    if isinstance(value, dict) else _history_page_url(value))
+            if page and page not in pages:
+                pages.append(page)
+    if not pages:
+        page = _history_page_url(job.get('page_url'))
+        if page:
+            pages.append(page)
+    result = {'source_page_url': pages[0] if pages else None}
+    if len(pages) > 1:
+        result['source_sites'] = [{'source_page_url': page} for page in pages]
+    return result
+
+
+def _history_project_item(item: dict, joins: dict) -> dict:
+    projected = dict(item, history_key=_history_item_key(item))
+    provenance = _history_provenance({}, item)
+    if not provenance['source_page_url']:
+        job_id = item.get('job_id') or item.get('last_job_id')
+        source_id = item.get('source_id') or item.get('last_source_id')
+        # Bound unique joins per response. No scans, title matching or file writes.
+        if isinstance(job_id, str) and re.fullmatch(r'[0-9a-f]{16}', job_id) and isinstance(source_id, str) and 0 < len(source_id) <= 256:
+            refs = (job_id, source_id)
+            if refs not in joins and len(joins) < 128:
+                try:
+                    joins[refs] = _find_job_source(*refs)
+                except Exception:
+                    joins[refs] = ({}, {})
+            provenance = _history_provenance(*joins.get(refs, ({}, {})))
+    projected.pop('source_sites', None)
+    projected.update(provenance)
+    return projected
+
+
 def _history_public_items(endpoint: object = None) -> dict:
     store = _load_endpoint_history_store()
     history_id = _resolve_history_id(endpoint)
     bucket = _history_bucket(store, history_id)
+    joins = {}
     return {
         'schema': WATCH_HISTORY_ENDPOINT_SCHEMA,
         'history_id': history_id,
-        'items': [dict(item, history_key=_history_item_key(item)) for item in bucket.get('items', []) if isinstance(item, dict)],
+        'items': [_history_project_item(item, joins) for item in bucket.get('items', []) if isinstance(item, dict)],
         'migration': store.get('migration') if isinstance(store.get('migration'), dict) else {},
     }
 
@@ -420,6 +501,7 @@ def _record_history_progress(endpoint: object, media: dict, *, job: dict | None 
             if source.get(source_key) not in (None, ''):
                 item[source_key] = source.get(source_key)
         if existing is None:
+            item.update(_history_provenance(job, source))
             item.setdefault('created_at', now)
             bucket['items'].insert(0, item)
         else:

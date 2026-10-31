@@ -72,3 +72,17 @@ def test_inline_javascript_syntax_is_valid(tmp_path: Path) -> None:
     path.write_text("\n".join(scripts), encoding="utf-8")
     run = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stderr
+
+
+def test_shared_catalog_owner_is_an_external_integration_dependency() -> None:
+    """This checkout consumes the shared API but does not own its implementation.
+
+    Issue #74 provenance in app.py projects endpoint watch progress only. The
+    canonical shared saved-catalog owner must independently expose these fields
+    for Android #4919; adding a guessed route here would conflate the stores.
+    """
+    from test_skeleton_cast_media_target import cast_app
+    routes = {rule.rule for rule in cast_app.app.url_map.iter_rules()}
+    assert '/api/media/history' in routes
+    assert not any(route.startswith('/api/video/history') for route in routes)
+    assert "jf('/api/video/history',{cache:'no-store'})" in _loader()

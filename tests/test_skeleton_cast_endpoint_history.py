@@ -278,3 +278,138 @@ def test_legacy_v2_last_job_source_aliases_resume_from_endpoint_history(monkeypa
     assert result["history_id"] == "home_edge_tv"
     assert result["endpoint_id"] == "tv"
     assert fake.calls == [("play", "src-1080"), ("seek", 52.0), ("control", "play")]
+
+
+def test_new_history_keeps_selected_original_pages_and_progress(monkeypatch, tmp_path: Path) -> None:
+    _install_history(monkeypatch, tmp_path)
+    source = {'source_id': 'chosen', 'discovery_page_url': 'https://uakino.best/123-film.html',
+              'history_page_url': 'https://klon.fun/film.html', 'url': 'https://cdn.example.org/private.m3u8?token=private',
+              'season': '2', 'episode': '3', 'translation': 'Voice'}
+    media = {'job_id': 'a' * 16, 'source_id': 'chosen', 'position_seconds': 41.25, 'playing': False}
+    result = cast_app._record_history_progress('tv', media, job={'page_url': 'https://other.example.org/fallback.html'}, source=source)['item']
+    assert result['source_page_url'] == source['discovery_page_url']
+    assert result['source_sites'] == [{'source_page_url': source['discovery_page_url']},
+                                      {'source_page_url': source['history_page_url']}]
+    before = cast_app.WATCH_HISTORY_ENDPOINTS.read_bytes()
+    projected = cast_app._history_public_items('tv')['items'][0]
+    assert projected == result
+    assert projected['position_seconds'] == 41.25
+    assert projected['playing'] is False
+    assert [projected[k] for k in ('season', 'episode', 'translation')] == ['2', '3', 'Voice']
+    assert cast_app.WATCH_HISTORY_ENDPOINTS.read_bytes() == before
+    assert 'private' not in json.dumps(projected)
+    assert cast_app._history_public_items('samsung')['items'] == []
+
+
+def test_existing_source_sites_preserve_multiple_origins(monkeypatch) -> None:
+    import copy
+    primary = 'https://uakino.best/film.html'
+    second = 'https://klon.fun/film.html'
+    expected = {'source_page_url': primary,
+                'source_sites': [{'source_page_url': primary}, {'source_page_url': second}]}
+    def forbidden(*args):
+        raise AssertionError('existing provenance must not need a join')
+    monkeypatch.setattr(cast_app, '_find_job_source', forbidden)
+    for sites in (
+        [primary, second, primary, 'https://example.org/live.m3u8', 'http://127.0.0.1/film.html'],
+        [{'source_page_url': primary, 'page_url': 'https://other.example.org/ignored.html'},
+         {'page_url': second}, {'source_page_url': second},
+         {'source_page_url': 'https://example.org/film?token=private'},
+         {'page_url': 'https://cdn.example.org/live.m3u8'},
+         {'url': 'https://other.example.org/stream.html'},
+         {'cover_url': 'https://other.example.org/cover.jpg'}, None, 42],
+    ):
+        item = {'source_page_url': primary, 'source_sites': sites,
+                'job_id': 'a' * 16, 'source_id': 'chosen'}
+        original = copy.deepcopy(item)
+        assert cast_app._history_provenance({}, item) == expected
+        assert cast_app._history_project_item(item, {}) == dict(
+            item, history_key=cast_app._history_item_key(item), **expected)
+        assert item == original
+        assert cast_app._history_provenance({}, {'source_sites': sites}) == expected
+
+
+def test_old_history_projection_joins_refs_without_mutation_or_reordering(monkeypatch, tmp_path: Path) -> None:
+    import copy
+    _install_history(monkeypatch, tmp_path)
+    records = [{'job_id': 'b' * 16, 'source_id': 'chosen', 'media_id': 'stable', 'position_seconds': 83,
+                'season': '1', 'episode': '4', 'translation': 'Voice'},
+               {'last_job_id': 'b' * 16, 'last_source_id': 'chosen', 'history_key': 'second'},
+               {'job_id': '../bad', 'source_id': 'missing', 'history_key': 'third'}]
+    store = cast_app._history_default([])
+    cast_app._history_bucket(store, 'tv')['items'] = records
+    cast_app._save_endpoint_history_store(store)
+    before = cast_app.WATCH_HISTORY_ENDPOINTS.read_bytes()
+    original = copy.deepcopy(records)
+    calls = []
+    def find(job_id, source_id):
+        calls.append((job_id, source_id))
+        return {'page_url': 'https://uakino.best/fallback.html'}, {'discovery_page_url': 'https://klon.fun/original.html'}
+    monkeypatch.setattr(cast_app, '_find_job_source', find)
+    projected = cast_app._history_public_items('tv')['items']
+    assert calls == [('b' * 16, 'chosen')]
+    assert [i['history_key'] for i in projected] == [cast_app._history_item_key(i) for i in records]
+    assert [i['source_page_url'] for i in projected] == ['https://klon.fun/original.html'] * 2 + [None]
+    assert projected[0]['media_id'] == 'stable'
+    assert projected[0]['position_seconds'] == 83
+    assert records == original
+    assert cast_app.WATCH_HISTORY_ENDPOINTS.read_bytes() == before
+
+
+def test_provenance_rejects_streams_credentials_and_private_urls() -> None:
+    unsafe = [
+        'https://cdn.example.org/video', 'https://example.org/live.m3u8',
+        'https://example.org/video.mpd', 'https://example.org/video.mp4',
+        'http://127.0.0.1/film.html', 'http://192.168.0.1/film.html',
+        'http://[::1]/film.html', 'http://localhost/film.html', 'http://box.lan/film.html',
+        'https://user:private@example.org/film.html', 'https://example.org/film?token=private',
+        'https://example.org/film?x=private', 'https://example.org/film#private',
+        'https://example.org/%74oken/private', 'https://example.org/player/123',
+        'file:///tmp/movie', 'https://example.org:bad/film',
+        'https://example.org/film%0a.html', 'https://device.tailnet.ts.net/film.html',
+    ]
+    for value in unsafe:
+        assert cast_app._history_page_url(value) is None, value
+        result = cast_app._history_provenance({}, {'source_page_url': value, 'source_sites': [value]})
+        assert result == {'source_page_url': None}
+    assert cast_app._history_provenance({'page_url': 'https://uakino.best/film.html'}, {'url': unsafe[0], 'headers': {'Referer': unsafe[0]}}) == {'source_page_url': 'https://uakino.best/film.html'}
+    assert cast_app._history_page_url('https://www.youtube.com/watch?v=AbCdEf12345') == 'https://www.youtube.com/watch?v=AbCdEf12345'
+
+
+def test_projection_bounds_joins_and_does_not_resolve_network(monkeypatch) -> None:
+    import socket
+    def forbidden(*args, **kwargs):
+        raise AssertionError('projection must not call external services or write')
+    monkeypatch.setattr(socket, 'getaddrinfo', forbidden)
+    monkeypatch.setattr(cast_app, '_save_endpoint_history_store', forbidden)
+    calls = []
+    def missing(*refs):
+        calls.append(refs)
+        raise FileNotFoundError
+    monkeypatch.setattr(cast_app, '_find_job_source', missing)
+    joins = {}
+    for index in range(140):
+        item = {'job_id': f'{index:016x}', 'source_id': 'chosen'}
+        assert cast_app._history_project_item(item, joins)['source_page_url'] is None
+    assert len(calls) == len(joins) == 128
+    assert cast_app._history_project_item({'source_page_url': 'https://uakino.best/film.html'}, {})['source_page_url'] == 'https://uakino.best/film.html'
+
+
+def test_projection_uses_actual_job_source_lookup_and_safe_job_fallback(monkeypatch, tmp_path: Path) -> None:
+    _install_history(monkeypatch, tmp_path)
+    jobs = tmp_path / 'jobs'
+    jobs.mkdir()
+    monkeypatch.setattr(cast_app, 'JOBS', jobs)
+    job_id = 'c' * 16
+    job = {'job_id': job_id, 'page_url': 'https://uakino.best/original.html',
+           'sources': [{'source_id': 'chosen', 'url': 'https://cdn.example.org/video.m3u8?token=private'}]}
+    path = jobs / f'{job_id}.json'
+    path.write_text(json.dumps(job), encoding='utf-8')
+    before = path.read_bytes()
+    item = {'job_id': job_id, 'source_id': 'chosen', 'history_key': 'stable', 'position_seconds': 25}
+    projected = cast_app._history_project_item(item, {})
+    assert projected == dict(item, source_page_url=job['page_url'])
+    assert path.read_bytes() == before
+    assert cast_app._history_project_item(dict(item, source_id='removed'), {})['source_page_url'] is None
+    assert cast_app._history_project_item(dict(item, job_id='d' * 16), {})['source_page_url'] is None
+    assert 'source_page_url' not in item
