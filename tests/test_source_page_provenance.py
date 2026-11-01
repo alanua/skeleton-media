@@ -9,6 +9,7 @@ import pytest
 from skeleton_media.cast.source_page_provenance import (
     source_page_provenance as provenance,
     validated_page_url,
+    verified_group_source_sites as group_sites,
 )
 
 
@@ -25,6 +26,110 @@ def group():
 
 def selected(value=None, **kwargs):
     return provenance(group() if value is None else value, job_id="episode-1", source_id="dub", **kwargs)
+
+
+def site_group(*rows):
+    return {"jobs": [(mtime, {"job_id": jid, "sources": [
+        {"source_id": "repeated", "source_page_url": url}]})
+        for mtime, jid, url in rows]}
+
+
+def site_urls(data, **kwargs):
+    return [site["source_page_url"] for site in group_sites(data, **kwargs).get("source_sites", [])]
+
+
+def test_group_sites_host_dedup_case_scheme_port_and_path():
+    data = site_group((1, "old", "http://MIRROR.org:80/old"),
+                      (2, "new", "https://mirror.org/new"))
+    assert site_urls(data) == ["https://mirror.org/new"]
+
+
+def test_group_sites_newest_first_and_stable_ties():
+    data = site_group((1, "old", "https://old.org/1"),
+                      (3, "first", "https://first.org/1"),
+                      (3, "second", "https://second.org/1"))
+    assert site_urls(data) == ["https://first.org/1", "https://second.org/1", "https://old.org/1"]
+
+
+def test_group_sites_selection_still_requires_separate_exact_job_id():
+    data = site_group((1, "old", "https://old.org/1"), (2, "new", "https://new.org/1"))
+    assert len(site_urls(data)) == 2
+    assert provenance(data, source_id="repeated") == {}
+    assert provenance(data, job_id="old", source_id="repeated") == {"source_page_url": "https://old.org/1"}
+    assert set(group_sites(data)) == {"source_sites"}
+
+
+def test_group_sites_safe_queries_preserved():
+    url = "https://public.org/watch?id=12&episode=3"
+    assert site_urls(site_group((1, "job", url))) == [url]
+
+
+@pytest.mark.parametrize("url", ["https://public.org/watch?token=secret",
+    "https://127.0.0.1/watch", "https://private.local/watch",
+    "https://public.org/video.m3u8", "https://public.org/video.mp4", "not a url"])
+def test_group_sites_reject_unsafe_candidates(url):
+    assert group_sites(site_group((1, "job", url))) == {}
+
+
+def test_group_sites_ignore_arbitrary_metadata_and_stream_fields():
+    data = site_group((1, "job", None))
+    source = data["jobs"][0][1]["sources"][0]
+    source.update(stream_url="https://stream.org/watch", url="https://url.org/watch")
+    data.update(preferred={"source_page_url": "https://preferred.org/watch"},
+                source_page_url="https://catalog.org/watch",
+                source_sites=["https://catalog.org/watch"])
+    assert group_sites(data) == {}
+
+
+def test_group_sites_require_member_source_identity():
+    data = group()
+    for _, job in data["jobs"]:
+        for source in job["sources"]:
+            source.pop("source_id")
+    assert group_sites(data) == {}
+    data = group()
+    for _, job in data["jobs"]:
+        for source in job["sources"]:
+            source["job_id"] = "other"
+    assert group_sites(data) == {}
+
+
+def test_group_sites_reuse_priority_fallback_and_legacy_pages():
+    data = site_group((1, "job", None))
+    job = data["jobs"][0][1]
+    job["page_url"] = "https://fallback.org/watch"
+    job["sources"][0]["source_sites"] = ["https://legacy.org/watch", "https://legacy.org/other"]
+    assert site_urls(data) == ["https://fallback.org/watch", "https://legacy.org/watch"]
+    job["sources"][0]["discovery_page_url"] = "https://discovery.org/watch"
+    assert site_urls(data) == ["https://discovery.org/watch", "https://legacy.org/watch"]
+
+
+@pytest.mark.parametrize("data", [None, [], {}, {"jobs": None}, {"jobs": {}},
+    {"jobs": [None, (), (1,), (1, None), (1, {}), (None, {}), ("3", {}),
+              (float("nan"), {}), (float("inf"), {}), (True, {})]}])
+def test_group_sites_malformed_groups(data):
+    assert group_sites(data) == {}
+
+
+@pytest.mark.parametrize("limit, expected", [(1, 1), (3, 3), (5, 5), (100, 5),
+    (0, 1), (-1, 1), (None, 5), (True, 5), ("2", 5)])
+def test_group_sites_hard_bound(limit, expected):
+    data = site_group(*[(i, str(i), f"https://site{i}.org/watch") for i in range(8)])
+    assert len(site_urls(data, max_sites=limit)) == expected
+
+
+def test_group_sites_no_mutation_and_independent_json_result():
+    data = group()
+    before = deepcopy(data)
+    result = group_sites(data)
+    assert data == before
+    assert json.loads(json.dumps(result)) == result
+    result["source_sites"][0]["source_page_url"] = "changed"
+    assert data == before
+
+
+def test_group_sites_stable_source_order_for_equal_host():
+    assert site_urls(group()) == ["https://mirror.org/ep1/dub"]
 
 
 def test_exact_pair_distinguishes_episode_and_voice():

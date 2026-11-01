@@ -124,6 +124,34 @@ def _pages(source, job):
     return pages
 
 
+def verified_group_source_sites(group, *, max_sites=5):
+    """Return up to five member-source sites, one per lowercase hostname.
+
+    The caller attests group membership as for ``_records``. Only finite numeric
+    mtime rows participate, newest first; ties retain job/source/page order.
+    This collection makes no claim about which source is selected.
+    """
+    if not isinstance(group, Mapping) or not isinstance(group.get("jobs"), (list, tuple)):
+        return {}
+    rows = [row for row in group["jobs"]
+            if isinstance(row, (list, tuple)) and len(row) == 2
+            and type(row[0]) in (int, float) and -float("inf") < row[0] < float("inf")]
+    rows = sorted(rows, key=lambda row: row[0], reverse=True)
+    limit = max(1, min(max_sites, 5)) if type(max_sites) is int else 5
+    sites = []
+    hosts = set()
+    for _, source, job in _records({"jobs": rows}):
+        for page in _pages(source, job):
+            host = urlsplit(page).hostname.lower()
+            if host in hosts:
+                continue
+            hosts.add(host)
+            sites.append({"source_page_url": page})
+            if len(sites) >= limit:
+                return {"source_sites": sites}
+    return {"source_sites": sites} if sites else {}
+
+
 def source_page_provenance(group, *, job_id=None, source_id=None,
                            verified_source=None, include_source_sites=False,
                            all_verified_sites=False, max_sites=8):
