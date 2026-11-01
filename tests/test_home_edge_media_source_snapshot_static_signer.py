@@ -190,3 +190,142 @@ def test_installed_contract_requires_root_owned_regular_file(monkeypatch: pytest
     if os.getuid() != 0:
         with pytest.raises(SystemExit):
             payload.expected_snapshot_script()
+
+
+def test_installed_audit_precedes_commit_with_rollback_armed() -> None:
+    text = INSTALLER_PATH.read_text()
+    install = text.index('install -o root -g root -m 0440 "$BACKUP_DIR/sudoers.new" "$SUDOERS_PATH"')
+    audit = text.index('validate_installed_file "$INSTALL_ROOT/signer_payload.py"')
+    sudoers_audit = text.index('visudo -cf "$SUDOERS_PATH"')
+    commit = text.index('COMMITTED=1')
+    assert text.index('trap rollback EXIT') < install < audit < sudoers_audit < commit
+    assert commit < text.index('trap - EXIT', commit)
+    for call in (
+        'validate_installed_file "$INSTALL_ROOT/signer_payload.py" 555 "$PAYLOAD_BLOB_SHA"',
+        'validate_installed_file "$INSTALL_ROOT/contract_source.py" 444 "$CONTRACT_BLOB_SHA"',
+        'validate_installed_file "$EXEC_ROOT/signer" 555 "$WRAPPER_BLOB_SHA"',
+        'validate_installed_file "$SUDOERS_PATH" 440',
+    ):
+        assert call in text[audit:commit]
+
+
+@pytest.mark.parametrize("target", ["payload", "contract", "wrapper", "sudoers"])
+@pytest.mark.parametrize("fault", ["none", "content", "uid", "gid", "mode", "symlink", "directory", "missing", "stat", "hash", "visudo"])
+def test_installed_audit_synthetic_rollback(
+    tmp_path: Path, target: str, fault: str,
+) -> None:
+    # Execute only the audit and existing rollback in a temporary sandbox. Never
+    # execute the installer entry point, sudo, chown, or privileged install.
+    import hashlib
+    import shlex
+
+    text = INSTALLER_PATH.read_text()
+    rollback = text.split('rollback() {', 1)[1].split('\ntrap rollback EXIT', 1)[0]
+    audit = text.split('validate_installed_file() {', 1)[1].split('\nCOMMITTED=1', 1)[0]
+    paths = {
+        "payload": tmp_path / "runtime/signer_payload.py",
+        "contract": tmp_path / "runtime/contract_source.py",
+        "wrapper": tmp_path / "exec/signer",
+        "sudoers": tmp_path / "sudoers",
+    }
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    for directory in ("install-root", "exec-root"):
+        (backup / directory).mkdir()
+    old_paths = [backup / "install-root/signer_payload.py", backup / "install-root/contract_source.py", backup / "exec-root/signer", backup / "sudoers"]
+    for old in old_paths:
+        old.write_bytes(b"old working install\n")
+        old.chmod(0o440 if old.name == "sudoers" else 0o555)
+    blobs = {}
+    for key, path in paths.items():
+        path.parent.mkdir(exist_ok=True)
+        data = (f'agent ALL=(root) NOPASSWD: {tmp_path}/exec/signer ""\n' if key == "sudoers" else key).encode()
+        path.write_bytes(data)
+        path.chmod(0o444 if key == "contract" else 0o440 if key == "sudoers" else 0o555)
+        blobs[key] = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+    selected = paths[target]
+    if fault == "content":
+        selected.chmod(0o644)
+        selected.write_bytes(selected.read_bytes() + b"tampered\n")
+        selected.chmod(0o444 if target == "contract" else 0o440 if target == "sudoers" else 0o555)
+    elif fault in ("symlink", "directory", "nonempty_directory", "fifo", "missing"):
+        selected.unlink()
+        if fault == "symlink":
+            selected.symlink_to(old_paths[0])
+        elif fault in ("directory", "nonempty_directory"):
+            selected.mkdir()
+            if fault == "nonempty_directory":
+                (selected / "unrelated").write_bytes(b"retain unrelated contents\n")
+        elif fault == "fifo":
+            import os
+
+            os.mkfifo(selected)
+    assignments = {
+        "INSTALL_ROOT": tmp_path / "runtime", "EXEC_ROOT": tmp_path / "exec",
+        "SUDOERS_PATH": paths["sudoers"], "BACKUP_DIR": backup,
+        "STAGING_PARENT": tmp_path / "stage", "RUNNER_USER": "agent",
+        "PAYLOAD_BLOB_SHA": blobs["payload"], "CONTRACT_BLOB_SHA": blobs["contract"],
+        "WRAPPER_BLOB_SHA": blobs["wrapper"], "FAULT": fault, "TARGET": selected,
+    }
+    script = 'set -Eeuo pipefail\n' + '\n'.join(f'{k}={shlex.quote(str(v))}' for k, v in assignments.items())
+    script += r'''
+COMMITTED=0
+ACTIVATION_STARTED=1
+BACKUPS_READY=1
+HAD_INSTALL_ROOT=1
+HAD_EXEC_ROOT=1
+HAD_SUDOERS=1
+stat() {
+  if [[ "${@: -1}" == "$TARGET" ]]; then
+    case "$FAULT" in
+      uid) printf '1:0:%s\n' "$(command stat -c '%a' -- "$TARGET")"; return;;
+      gid) printf '0:1:%s\n' "$(command stat -c '%a' -- "$TARGET")"; return;;
+      mode) echo '0:0:777'; return;;
+      stat) return 1;;
+    esac
+  fi
+  # Synthetic root ownership; preserve actual filesystem mode verification.
+  printf '0:0:%s\n' "$(command stat -c '%a' -- "${@: -1}")"
+}
+reviewed_blob_sha() {
+  if [[ "$FAULT" == hash && "$1" == "$TARGET" ]]; then return 1; fi
+  /usr/bin/git hash-object --no-filters --stdin < "$1"
+}
+visudo() { [[ "$FAULT" != visudo ]]; }
+install() {
+  [[ "$1 $2 $3 $4 $5 $6" == '-o root -g root -m 0440' ]]
+  command cp -- "$7" "$8"
+  command chmod 0440 "$8"
+}
+'''
+    script += '\nrollback() {' + rollback + '\ntrap rollback EXIT\n'
+    script += '\nvalidate_installed_file() {' + audit + '\nCOMMITTED=1\n'
+    result = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
+    fails = fault != "none" and not (fault == "hash" and target == "sudoers")
+    assert (result.returncode != 0) == fails, result.stderr
+    if fault in ("nonempty_directory", "fifo"):
+        assert result.returncode == 70
+        assert result.stderr.count("FATAL:") == 1
+        assert "backups retained" in result.stderr
+        assert backup.is_dir()
+        for old in old_paths:
+            assert old.read_bytes() == b"old working install\n"
+        if fault == "nonempty_directory":
+            assert "must be empty" in result.stderr
+            assert (selected / "unrelated").read_bytes() == b"retain unrelated contents\n"
+        else:
+            assert selected.is_fifo()
+        return
+    if fails:
+        for path in paths.values():
+            assert path.is_file() and not path.is_symlink()
+            assert path.read_bytes() == b"old working install\n"
+        assert paths["sudoers"].stat().st_mode & 0o7777 == 0o440
+    else:
+        assert paths["payload"].read_bytes() == b"payload"
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize("fault", ["nonempty_directory", "fifo"])
+def test_sudoers_rollback_refuses_destructive_cleanup(tmp_path: Path, fault: str) -> None:
+    test_installed_audit_synthetic_rollback(tmp_path, "sudoers", fault)

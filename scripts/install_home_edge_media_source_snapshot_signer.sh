@@ -169,10 +169,22 @@ rollback() {
     else
       rm -rf "$EXEC_ROOT"
     fi
+    if [[ -L "$SUDOERS_PATH" || -f "$SUDOERS_PATH" ]]; then
+      if ! rm -f -- "$SUDOERS_PATH"; then
+        printf 'FATAL: cannot remove sudoers leaf during rollback; backups retained at %s\n' "$BACKUP_DIR" >&2
+        exit 70
+      fi
+    elif [[ -d "$SUDOERS_PATH" ]]; then
+      if ! rmdir -- "$SUDOERS_PATH"; then
+        printf 'FATAL: cannot remove unexpected sudoers directory during rollback (must be empty); backups retained at %s\n' "$BACKUP_DIR" >&2
+        exit 70
+      fi
+    elif [[ -e "$SUDOERS_PATH" ]]; then
+      printf 'FATAL: refusing unexpected sudoers special file during rollback; backups retained at %s\n' "$BACKUP_DIR" >&2
+      exit 70
+    fi
     if [[ $HAD_SUDOERS -eq 1 ]]; then
       install -o root -g root -m 0440 "$BACKUP_DIR/sudoers" "$SUDOERS_PATH"
-    else
-      rm -f "$SUDOERS_PATH"
     fi
   fi
   rm -rf "$BACKUP_DIR"
@@ -252,6 +264,36 @@ EOF
 chmod 0440 "$BACKUP_DIR/sudoers.new"
 visudo -cf "$BACKUP_DIR/sudoers.new" >/dev/null
 install -o root -g root -m 0440 "$BACKUP_DIR/sudoers.new" "$SUDOERS_PATH"
+
+validate_installed_file() {
+  local path="$1" expected_mode="$2" expected_blob="${3:-}" metadata actual_blob
+  if [[ -L "$path" || ! -f "$path" ]]; then
+    printf 'BLOCKED: installed signer file is not a regular non-symlink\n' >&2
+    exit 2
+  fi
+  metadata="$(stat -c '%u:%g:%a' -- "$path")"
+  if [[ "$metadata" != "0:0:$expected_mode" ]]; then
+    printf 'BLOCKED: installed signer ownership or mode mismatch\n' >&2
+    exit 2
+  fi
+  if [[ -n "$expected_blob" ]]; then
+    actual_blob="$(reviewed_blob_sha "$path")"
+    if [[ "$actual_blob" != "$expected_blob" ]]; then
+      printf 'BLOCKED: installed signer bytes do not match approved blob\n' >&2
+      exit 2
+    fi
+  fi
+}
+
+validate_installed_file "$INSTALL_ROOT/signer_payload.py" 555 "$PAYLOAD_BLOB_SHA"
+validate_installed_file "$INSTALL_ROOT/contract_source.py" 444 "$CONTRACT_BLOB_SHA"
+validate_installed_file "$EXEC_ROOT/signer" 555 "$WRAPPER_BLOB_SHA"
+validate_installed_file "$SUDOERS_PATH" 440
+if ! printf '%s ALL=(root) NOPASSWD: %s/signer ""\n' "$RUNNER_USER" "$EXEC_ROOT" | cmp -s -- "$SUDOERS_PATH" -; then
+  printf 'BLOCKED: installed signer sudoers content mismatch\n' >&2
+  exit 2
+fi
+visudo -cf "$SUDOERS_PATH" >/dev/null
 
 COMMITTED=1
 rm -rf "$STAGING_PARENT" "$BACKUP_DIR"
