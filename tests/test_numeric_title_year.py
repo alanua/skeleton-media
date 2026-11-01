@@ -111,6 +111,70 @@ def test_series_match():
     assert candidate_match(year_evidence('Fargo (2014)'), 'series', Candidate('Fargo', 'series', 2014)).accepted
 
 
+@pytest.mark.parametrize(('selected_type', 'candidate_type'), [
+    ('tv', 'tv'), ('series', 'tv'), ('tv', 'series'), ('movie', 'movie'),
+])
+def test_canonical_and_legacy_media_types(selected_type, candidate_type):
+    result = candidate_match(year_evidence('Synthetic Title (2014)'), selected_type,
+                             Candidate('Synthetic Title', candidate_type, 2014))
+    assert result.accepted
+    assert result.reason == Reason.STRONG_IDENTITY
+    assert result.title_score == 1.0
+
+
+@pytest.mark.parametrize(('selected_type', 'candidate_type'), [
+    ('tv', 'movie'), ('movie', 'tv'),
+    ('series', 'movie'), ('movie', 'series'),
+    ('anime', 'movie'), ('tv', 'anime'), ('anime', 'anime'),
+])
+def test_movie_and_series_types_remain_distinct(selected_type, candidate_type):
+    # An anime movie still requires movie type, regardless of its title or year.
+    result = candidate_match(year_evidence('Synthetic Anime (2014)'), selected_type,
+                             Candidate('Synthetic Anime', candidate_type, 2014))
+    assert not result.accepted
+    assert result.reason == Reason.TYPE_MISMATCH
+    assert result.title_score == 0.0
+
+
+def test_stale_numeric_catalog_year_requires_verified_title_alias():
+    local = '2001: Космічна Одіссея'
+    evidence = year_evidence(local, catalog_year=2001)
+    assert evidence.search_years == (None,)
+    assert evidence.constraint is None
+    assert evidence.reason == Reason.NUMERIC_TITLE
+    # Synthetic trusted alias metadata is explicitly supplied by the caller.
+    candidate = Candidate('2001: A Space Odyssey', 'movie', 1968, aliases=(local,))
+    result = candidate_match(evidence, 'movie', candidate)
+    assert result.accepted
+    assert result.reason == Reason.STRONG_IDENTITY
+    assert result.title_score == 1.0
+    for title in ('2001: A Space Odyssey', '2001: Another Story'):
+        result = candidate_match(evidence, 'movie', Candidate(title, 'movie', 1968))
+        assert not result.accepted
+        assert result.reason == Reason.TITLE_MISMATCH
+
+
+def test_1917_catalog_ambiguity_and_trusted_explicit_year():
+    candidate = Candidate(' １９１７! ', 'movie', 2019)
+    ambiguous = year_evidence('1917', catalog_year=1917)
+    assert ambiguous.reason == Reason.NUMERIC_TITLE
+    assert ambiguous.constraint is None
+    assert ambiguous.search_years == (None,)
+    result = candidate_match(ambiguous, 'movie', candidate)
+    assert result.accepted
+    assert result.reason == Reason.STRONG_IDENTITY
+    assert result.title_score == 1.0
+
+    trusted = year_evidence('1917', catalog_year=1917, explicit_year=1917)
+    assert trusted.reason == Reason.TRUSTED_YEAR
+    assert trusted.constraint == 1917
+    assert trusted.search_years == (1917, None)
+    result = candidate_match(trusted, 'movie', candidate)
+    assert not result.accepted
+    assert result.reason == Reason.YEAR_MISMATCH
+    assert result.title_score == 1.0
+
+
 @pytest.mark.parametrize('candidate', ['  2001 — A SPACE ODYSSEY! ', '２００１: A Space Odyssey'])
 def test_normalized_title(candidate):
     result = candidate_match(year_evidence('2001: A Space Odyssey'), 'movie', Candidate(candidate, 'movie', 1968))

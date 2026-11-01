@@ -14,7 +14,7 @@ import re
 import unicodedata
 from typing import Literal
 
-MediaType = Literal["movie", "series"]
+MediaType = Literal["movie", "tv", "series"]
 
 
 class Reason(str, Enum):
@@ -115,6 +115,7 @@ def candidate_match(
 ) -> MatchDecision:
     """Require exact normalized title/alias and known matching media type.
 
+    Canonical tv and legacy series denote the same type; movies remain distinct.
     Similarity is diagnostic only: even a high fuzzy score or matching year cannot
     establish identity. Translation is supplied as metadata, never guessed. These
     are candidate decisions, not a unique selection among same-title remakes.
@@ -122,7 +123,8 @@ def candidate_match(
     _valid_year(candidate.year)
     if evidence.reason == Reason.CONFLICTING_YEARS:
         return MatchDecision(False, Reason.CONFLICTING_YEARS, 0.0)
-    if media_type not in ("movie", "series") or candidate.media_type != media_type:
+    types = {"movie": "movie", "tv": "series", "series": "series"}
+    if media_type not in types or types.get(candidate.media_type) != types[media_type]:
         return MatchDecision(False, Reason.TYPE_MISMATCH, 0.0)
     requested = [_normalize(t) for t in (evidence.title, *title_aliases)]
     offered = [_normalize(_split_title(t)[0]) for t in (candidate.title, *candidate.aliases)]
