@@ -99,6 +99,67 @@ def test_tv_and_samsung_progress_are_independent_for_same_content(monkeypatch, t
     assert samsung[0]["last_reason"] == "samsung_periodic"
 
 
+def test_tv_and_samsung_resume_positions_are_independent_for_same_content(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer(position=0.0)
+    _install_runtime(monkeypatch, tmp_path, fake)
+    _install_history(monkeypatch, tmp_path)
+    cast_app._record_history_progress(
+        "tv",
+        {"job_id": "a" * 16, "source_id": "src-1080", "position_seconds": 42.0},
+        reason="tv_progress",
+    )
+    cast_app._record_history_progress(
+        "samsung",
+        {"job_id": "a" * 16, "source_id": "src-1080", "position_seconds": 142.0},
+        reason="samsung_periodic",
+    )
+    tv_key = _history_key("tv")
+    samsung_key = _history_key("samsung")
+
+    tv_resumed = cast_app._history_resume("tv", tv_key)
+    samsung_resumed = cast_app._history_resume("samsung", samsung_key)
+    samsung_desired = json.loads(cast_app.SAMSUNG_RECEIVER_DESIRED.read_text(encoding="utf-8"))
+
+    assert tv_resumed["history_id"] == "home_edge_tv"
+    assert tv_resumed["endpoint_id"] == "tv"
+    assert samsung_resumed["history_id"] == "samsung_kiosk"
+    assert samsung_resumed["endpoint_id"] == "samsung"
+    assert fake.calls == [("play", "src-1080"), ("seek", 42.0), ("control", "play")]
+    assert samsung_desired["source_id"] == "src-720"
+    assert samsung_desired["position_seconds"] == 142.0
+
+
+def test_canonical_tombstone_store_does_not_resurrect_legacy_item_via_migration(monkeypatch, tmp_path: Path) -> None:
+    _install_history(monkeypatch, tmp_path)
+    legacy_items = _write_legacy(cast_app.WATCH_HISTORY_LEGACY, total=1, samsung_count=1)
+    before = cast_app.WATCH_HISTORY_LEGACY.read_text(encoding="utf-8")
+    cast_app.WATCH_HISTORY_ENDPOINTS.write_text(
+        json.dumps(
+            {
+                "schema": cast_app.WATCH_HISTORY_ENDPOINT_SCHEMA,
+                "version": 1,
+                "histories": {
+                    "home_edge_tv": {"items": []},
+                    "samsung_kiosk": {"items": []},
+                },
+                "tombstones": {
+                    "home_edge_tv": [legacy_items[0]["source_id"]],
+                    "samsung_kiosk": [legacy_items[0]["source_id"]],
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    tv = cast_app._history_public_items("tv")
+    samsung = cast_app._history_public_items("samsung")
+
+    assert tv["items"] == []
+    assert samsung["items"] == []
+    assert cast_app.WATCH_HISTORY_LEGACY.read_text(encoding="utf-8") == before
+
+
 def test_selector_capture_and_successful_handoff_do_not_mutate_source_history(monkeypatch, tmp_path: Path) -> None:
     cast_app._EXTRA_MEDIA_ENDPOINT_ADAPTERS.clear()
     fake = FakePlayer(paused=False, position=33.0)
