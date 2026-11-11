@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json, os, time
+import tempfile
 from pathlib import Path
 from typing import Any
 HOME=Path(os.environ.get('SKELETON_MEDIA_HOME', str(Path.home()))).expanduser()
@@ -10,9 +11,26 @@ SCHEMA='skeleton.media.state.v1'
 
 def _atomic_json(path:Path,value:dict[str,Any])->None:
     DIR.mkdir(parents=True,exist_ok=True)
-    tmp=path.with_suffix(path.suffix+'.tmp')
-    tmp.write_text(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n',encoding='utf-8')
-    os.replace(tmp,path)
+    tmp_name=None
+    try:
+        with tempfile.NamedTemporaryFile(
+            'w',
+            encoding='utf-8',
+            dir=path.parent,
+            prefix=f'.{path.name}.',
+            suffix='.tmp',
+            delete=False,
+        ) as fh:
+            tmp_name=fh.name
+            fh.write(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n')
+        os.replace(tmp_name,path)
+        tmp_name=None
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
 
 def publish(*,mode:dict[str,Any]|None=None,player:dict[str,Any]|None=None,volume:dict[str,Any]|None=None,reason:str='observe')->dict[str,Any]:
     try:
