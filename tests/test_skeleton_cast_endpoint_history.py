@@ -182,6 +182,50 @@ def test_endpoint_scoped_list_open_delete_and_resume_default_to_home_edge_tv(mon
     assert cast_app._history_public_items("samsung")["items"] == []
 
 
+def test_history_cache_observes_external_rewrites_and_deletes_without_cross_endpoint_resurrection(monkeypatch, tmp_path: Path) -> None:
+    _install_history(monkeypatch, tmp_path)
+    stale_store = cast_app._history_default([])
+    stale_store["histories"]["home_edge_tv"]["items"] = [
+        {"history_key": "stale-tv", "job_id": "a" * 16, "source_id": "src-1080", "title": "Stale TV", "position_seconds": 5.0}
+    ]
+    cast_app._atomic(cast_app.WATCH_HISTORY_ENDPOINTS, stale_store)
+
+    first = cast_app._history_public_items("tv")
+    assert first["items"][0]["history_key"] == "stale-tv"
+
+    fresh_store = cast_app._history_default([])
+    fresh_store["histories"]["home_edge_tv"]["items"] = [
+        {"history_key": "fresh-tv", "job_id": "b" * 16, "source_id": "src-720", "title": "Fresh TV", "position_seconds": 55.0}
+    ]
+    fresh_store["histories"]["samsung_kiosk"]["items"] = [
+        {
+            "history_key": "fresh-samsung",
+            "job_id": "c" * 16,
+            "source_id": "src-480",
+            "title": "Fresh Samsung",
+            "position_seconds": 155.0,
+        }
+    ]
+    cast_app.WATCH_HISTORY_ENDPOINTS.write_text(json.dumps(fresh_store, indent=2), encoding="utf-8")
+
+    rewritten = cast_app._history_public_items("tv")
+    assert [item["history_key"] for item in rewritten["items"]] == ["fresh-tv"]
+
+    deleted = cast_app._history_delete("tv", "fresh-tv")
+    store_after_delete = json.loads(cast_app.WATCH_HISTORY_ENDPOINTS.read_text(encoding="utf-8"))
+
+    assert deleted == {"history_id": "home_edge_tv", "deleted": 1}
+    assert store_after_delete["histories"]["home_edge_tv"]["items"] == []
+    assert store_after_delete["histories"]["samsung_kiosk"]["items"][0]["history_key"] == "fresh-samsung"
+    assert cast_app._history_public_items("tv")["items"] == []
+
+    cast_app.WATCH_HISTORY_ENDPOINTS.unlink()
+    after_external_unlink = cast_app._history_public_items("tv")
+
+    assert after_external_unlink["items"] == []
+    assert "stale-tv" not in cast_app.WATCH_HISTORY_ENDPOINTS.read_text(encoding="utf-8")
+
+
 def test_legacy_dict_items_migrate_losslessly_and_preserve_keys(monkeypatch, tmp_path: Path) -> None:
     _install_history(monkeypatch, tmp_path)
     items = {
@@ -241,6 +285,57 @@ def test_package_player_writes_endpoint_history_and_never_mutates_legacy(monkeyp
     assert entry["position_seconds"] == 42.0
     assert resume["history_found"] is True
     assert resume["resume_position"] == 42.0
+
+
+def test_package_player_title_episode_identity_resumes_across_source_ids(monkeypatch, tmp_path: Path) -> None:
+    state = tmp_path / "player-state"
+    state.mkdir()
+    monkeypatch.setattr(player_impl, "WATCH_HISTORY", state / "watch-history.json")
+    monkeypatch.setattr(player_impl, "WATCH_HISTORY_ENDPOINTS", state / "watch-history-endpoints.json")
+    job_one = {"job_id": "c" * 16, "title": "Synthetic Resume Show (2026)", "sources": []}
+    job_two = {"job_id": "d" * 16, "title": "Synthetic Resume Show (2026)", "sources": []}
+    same_episode_source = {
+        "source_id": "release-a-1080",
+        "title": "Mirror A",
+        "duration": 1800.0,
+        "season": "1",
+        "episode": "episode 2",
+        "translation": "Ukrainian",
+    }
+    replacement_source = {
+        "source_id": "release-b-720",
+        "title": "Mirror B",
+        "duration": 1800.0,
+        "season": "1",
+        "episode": "episode 2",
+        "translation": "English",
+    }
+    next_episode_source = {
+        "source_id": "release-c-720",
+        "title": "Mirror C",
+        "duration": 1800.0,
+        "season": "1",
+        "episode": "episode 3",
+        "translation": "Ukrainian",
+    }
+
+    entry = player_impl._save_progress_snapshot(
+        job_one,
+        same_episode_source,
+        96.0,
+        1800.0,
+        False,
+        "periodic",
+    )
+    same_resume = player_impl._history_resume(job_two, replacement_source)
+    next_resume = player_impl._history_resume(job_two, next_episode_source)
+
+    assert entry["content_key"] == same_resume["content_key"]
+    assert same_resume["history_found"] is True
+    assert same_resume["resume_position"] == 96.0
+    assert next_resume["content_key"] != entry["content_key"]
+    assert next_resume["history_found"] is False
+    assert next_resume["resume_position"] == 0.0
 
 
 def test_legacy_v2_last_job_source_aliases_resume_from_endpoint_history(monkeypatch, tmp_path: Path) -> None:

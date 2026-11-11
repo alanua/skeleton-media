@@ -454,6 +454,32 @@ def test_stale_previous_revision_playback_cannot_satisfy_new_media_postcondition
     assert cast_app._destination_verified(stored, revision=2, source_id="src-720", position=10.0, paused=False) is False
 
 
+def test_stale_samsung_selection_ack_cannot_advance_target_or_pause_tv(monkeypatch, tmp_path: Path) -> None:
+    fake = FakePlayer(paused=False, source_id="src-1080", position=123.0)
+    _install_runtime(monkeypatch, tmp_path, fake)
+    cast_app._atomic(
+        cast_app.SAMSUNG_RECEIVER_STATUS,
+        {
+            "device_id": "samsung_kiosk",
+            "revision": 1,
+            "mode": "video",
+            "source_id": "src-720",
+            "position_seconds": 123.0,
+            "playing": True,
+            "app": "receiver",
+        },
+    )
+
+    with pytest.raises(RuntimeError):
+        cast_app._switch_media_target("samsung")
+
+    desired = json.loads(cast_app.SAMSUNG_RECEIVER_DESIRED.read_text(encoding="utf-8"))
+    assert desired["revision"] == 2
+    assert cast_app._media_target_state()["target"] == "tv"
+    assert fake.status()["playing"] is True
+    assert fake.calls == []
+
+
 def test_status_endpoint_uses_revision_and_trusted_device_not_client_json_or_ip(monkeypatch, tmp_path: Path) -> None:
     fake = FakePlayer()
     _install_runtime(monkeypatch, tmp_path, fake)
