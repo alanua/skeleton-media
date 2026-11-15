@@ -13,10 +13,9 @@ def patch(root,js):
     ast.parse(s);p.write_text(s)
 
     p=root/'home-edge-youtube-stability';s=p.read_text()
-    s=replace_once(s,'from pathlib import Path','from pathlib import Path\nimport runpy\nsys.path.insert(0,str(Path(__file__).resolve().parent.parent/"lib/skeleton-cast"))\nfrom youtube_playback_health import youtube_progress_health')
+    s=replace_once(s,'from pathlib import Path','from pathlib import Path\nimport runpy\nsys.path.insert(0,str(Path(__file__).resolve().parent.parent/"lib/skeleton-cast"))\nfrom youtube_playback_health import youtube_progress_health,canonical_media_mode')
     helper='''def _mode_name(mode:str)->str:
-    match=re.search(r'(?m)^TV_MODE=([a-z]+)$',mode)
-    return match.group(1) if match else 'unknown'
+    return canonical_media_mode(mode)
 
 def youtube_health()->dict:
     probe=runpy.run_path(str(Path.home()/'.local/bin/home-edge-chrome-media'))['status']

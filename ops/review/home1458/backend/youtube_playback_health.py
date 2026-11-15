@@ -1,5 +1,14 @@
 """Progress evidence for YouTube; page liveness alone is never playback health."""
 import math
+import re
+
+
+def canonical_media_mode(status):
+    if not isinstance(status,str):return 'unknown'
+    modes=set(re.findall(r'(?m)^(?:TV_)?MODE=([a-z]+)$',status))
+    if len(modes)!=1:return 'unknown'
+    mode=next(iter(modes))
+    return mode if mode in {'kiosk','chrome','mpv','tv','games','off'} else 'unknown'
 
 
 def _number(value):

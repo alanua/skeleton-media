@@ -1,8 +1,14 @@
 import unittest
 from youtube_playback_health import youtube_progress_health as health
+from youtube_playback_health import canonical_media_mode
 
 
 class HealthTests(unittest.TestCase):
+    def test_canonical_status_output_and_mutation_output(self):
+        self.assertEqual(canonical_media_mode('MODE=kiosk\nACTIVE_TTY=tty2\nMPV=running\n'),'kiosk')
+        self.assertEqual(canonical_media_mode('TV_MODE=mpv\n'),'mpv')
+        for value in ['CHROME=running','MODE=unknown','MODE=kiosk\nTV_MODE=mpv\n',None]:
+            self.assertEqual(canonical_media_mode(value),'unknown')
     def sample(self,**values):
         return dict({'running':True,'pause':False,'video_id':'synthetic','time-pos':10,
                      'decoded_frames':100,'ready_state':4,'video_width':1280,
