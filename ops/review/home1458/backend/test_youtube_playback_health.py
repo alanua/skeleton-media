@@ -29,7 +29,17 @@ class HealthTests(unittest.TestCase):
     def test_missing_frame_evidence_is_unverified(self):
         self.assertEqual(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':None}),4)['state'],'unverified')
     def test_audio_only_can_advance_without_video(self):
-        self.assertTrue(health(self.sample(video_width=0),self.sample(**{'time-pos':14,'video_width':0,'decoded_frames':None}),4)['healthy'])
+        self.assertTrue(health(self.sample(video_width=0),self.sample(**{'time-pos':14,'video_width':0,'decoded_frames':None,'audio_only':True}),4)['healthy'])
+    def test_missing_video_geometry_cannot_claim_audio_only(self):
+        for width in [None,0]:
+            self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'video_width':width,'decoded_frames':None}),4)['healthy'])
+    def test_stale_or_unknown_pause_is_not_healthy(self):
+        self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':200}),120)['healthy'])
+        self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':200,'pause':None}),4)['healthy'])
+    def test_watchdog_field_names_are_supported(self):
+        a=self.sample();b=self.sample(decoded_frames=200)
+        a['time_pos']=a.pop('time-pos');b['time_pos']=14;b.pop('time-pos')
+        self.assertTrue(health(a,b,4)['healthy'])
     def test_stopped_or_short_or_invalid_probe_is_not_healthy(self):
         self.assertEqual(health(self.sample(),self.sample(running=False),4)['state'],'stopped')
         for elapsed in [0,1,None,float('nan'),True]:self.assertFalse(health(self.sample(),self.sample(),elapsed)['healthy'])
