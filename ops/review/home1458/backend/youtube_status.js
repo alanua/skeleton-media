@@ -10,6 +10,20 @@
   const id=active?rawId:'';
   const matches=!!id&&response?.videoDetails?.videoId===id;
   const details=matches?(response.videoDetails||{}):{};
+  const clean=value=>typeof value==='string'?value.trim():'';
+  const dataMatches=!!id&&data.video_id===id;
+  const metadata=active?navigator.mediaSession?.metadata:null;
+  const artworkIds=(Array.isArray(metadata?.artwork)?metadata.artwork:[]).map(item=>{
+    try{
+      const image=new URL(item.src,location.href);
+      if(image.protocol!=='https:'||image.username||image.password||
+         !['i.ytimg.com','img.youtube.com'].includes(image.hostname))return null;
+      return image.pathname.match(/^\/vi(?:_webp)?\/([A-Za-z0-9_-]{11})\//)?.[1]||null;
+    }catch(e){return null;}
+  }).filter(Boolean);
+  const metadataMatches=!!id&&artworkIds.length>0&&artworkIds.every(value=>value===id);
+  const title=active?(clean(details.title)||(dataMatches?clean(data.title):'')||
+    (metadataMatches?clean(metadata.title):'')):'';
   const thumbs=(details.thumbnail?.thumbnails||[]).filter(x=>x&&x.url);
   const live=active&&(video.duration===Infinity||(matches&&response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails?.isLiveNow===true)||data.is_live===true);
   let duration=active&&Number.isFinite(video.duration)?Number(video.duration):0;
@@ -22,8 +36,8 @@
   try{const q=video?.getVideoPlaybackQuality?.();frames=q?.totalVideoFrames??video?.webkitDecodedFrameCount??null;dropped=q?.droppedVideoFrames??video?.webkitDroppedFrameCount??null;}catch(e){}
   return {
     running:active,backend:'youtube-web',source:'YouTube Web',url:location.href,video_id:id,
-    'media-title':active?String(details.title||'').trim():'',
-    'display-title':active?String(details.title||'').trim():'',
+    'media-title':title,
+    'display-title':title,
     channel:active?String(details.author||'').trim()||null:null,
     poster:active?(thumbs.length?thumbs[thumbs.length-1].url:'https://i.ytimg.com/vi/'+id+'/hqdefault.jpg'):null,
     pause:video?video.paused:null,ended:video?video.ended:null,seeking:video?video.seeking:null,

@@ -1,0 +1,6 @@
+# R06 title regression repair — Skeleton#5007
+Classification: REVIEW / PUBLIC_SAFE. Parent ledger Skeleton#4928, media companion PR#82.
+The previous expression discarded the MediaSession title fallback and ignored same-ID getVideoData().title. A response without videoDetails consequently returned an empty title and Home showed its generic YouTube fallback.
+Restore ordered title sources: identity-matching response, same-ID video data, then MediaSession metadata bound by approved YouTube artwork URLs. Conflicting known artwork IDs, unrelated image hosts and unbound metadata cannot lend a title. Stopped/ended rules, live detection, poster, frame counters and all controls stay unchanged.
+Validation: previous expression fails the expanded synthetic test, corrected expression passes22 DOM cases;5 Python patch guards preserve all non-STATUS_JS AST nodes. Tests do not operate a real player. Runtime application, when recorded separately, uses an exact-hash single-assignment patch, private backup and registered rollback. No APK or service/Chrome restart is required.
+The original screenshot is operator evidence. A later receiver read was cued/stopped (state5) with no title metadata; it confirms missing videoDetails but does not establish a rendered-title acceptance pass. Actual active/current-title proof remains a separate check.
