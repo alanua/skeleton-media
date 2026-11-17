@@ -1,0 +1,133 @@
+"""Synthetic-only R19 tests: AST-extract status/collect, never import the app."""
+import ast
+import copy
+import os
+from pathlib import Path
+import types
+import unittest
+from mpv_playback_health import mpv_progress_health as health, finite_number
+import test_media_health_progress as media_fixture
+
+ROOT = Path(__file__).resolve().parent
+
+
+def sample(**changes):
+    return dict(running=True, observation_mode='mpv', backend=None,
+                source_id='synthetic', job_id='job', pid=12, started_at=1,
+                pause=False, seeking=False, ended=False, time_pos=10,
+                mpv_observed_at=980, decoded_frames=100, cache_duration=0,
+                paused_for_cache=True, **changes)
+
+
+def changed(before, **changes):
+    return dict(before, mpv_observed_at=1000, **changes)
+
+
+class MPVTests(unittest.TestCase):
+    def test_cache_starved_only_sustained(self):
+        a = sample()
+        self.assertEqual(health(a, changed(a), 20)['state'], 'cache_starved')
+        self.assertEqual(health(a, dict(a, mpv_observed_at=984), 4)['state'], 'sample')
+        self.assertNotIn('network', str(health(a, changed(a), 20)))
+
+    def test_cache_clock_frames_recovery(self):
+        a = sample()
+        for b, state in [(changed(a, cache_duration=2), 'decode_stalled'),
+                         (changed(a, time_pos=30, decoded_frames=200), 'buffering_recovery'),
+                         (changed(a, time_pos=30, decoded_frames=200, paused_for_cache=False), 'playing'),
+                         (changed(a, time_pos=30, paused_for_cache=False), 'frame_stalled')]:
+            if b['cache_duration'] == 2:
+                b['paused_for_cache'] = False
+            self.assertEqual(health(a, b, 20)['state'], state)
+
+    def test_pause_seek_end_boundaries(self):
+        a = sample()
+        for key, state in [('pause', 'paused'), ('seeking', 'seeking'), ('ended', 'ended')]:
+            result = health(a, changed(a, **{key: True}), 20)
+            self.assertEqual(result['state'], state)
+            self.assertFalse(result['healthy'])
+        for key, value in [('source_id','other'), ('job_id','other'), ('pid',13),
+                           ('session_id','other'), ('season',2), ('episode',2),
+                           ('observation_mode','kiosk'), ('time_pos',0), ('decoded_frames',1)]:
+            self.assertFalse(health(a, changed(a, **{key:value}), 20)['healthy'])
+        self.assertEqual(health(a, changed(a, observation_mode='kiosk'), 20)['state'], 'not_applicable')
+
+    def test_audio_only_missing_frames_and_malformed(self):
+        a = sample(); a.pop('decoded_frames')
+        self.assertFalse(health(a, changed(a, time_pos=30, paused_for_cache=False), 20)['healthy'])
+        self.assertTrue(health(dict(a,audio_only=True), changed(a,time_pos=30,paused_for_cache=False,audio_only=True),20)['healthy'])
+        for value in [True, '10', float('nan'), float('inf'), {}, None]:
+            self.assertFalse(health(a, changed(a, time_pos=value), 20)['healthy'])
+        for elapsed in [True, '20', float('nan'), 0, 100]:
+            self.assertFalse(health(a, changed(a), elapsed)['healthy'])
+        self.assertEqual(health(a, a, 20)['state'], 'stale')
+
+    def test_http_200_does_not_prove_complete(self):
+        a = sample()
+        b = changed(a, http_status=200, bytes_received=5, content_length=100)
+        self.assertFalse(health(a,b,20)['healthy'])
+        self.assertEqual(health(a,b,20)['state'], 'cache_starved')
+        for code in (401,403):
+            self.assertFalse(health(a,changed(a,http_status=code),20)['healthy'])
+
+    def test_status_is_bounded_observation_and_routes_unchanged(self):
+        tree = ast.parse((ROOT/'player.py').read_text())
+        node = next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='status')
+        calls=[]
+        values={'pause':False,'time-pos':10,'seeking':False,'eof-reached':False,
+                'paused-for-cache':True,'demuxer-cache-state':{'cache-duration':0,'fw-bytes':0,'private':'omit'},
+                'track-list':[{'type':'audio','selected':True}]}
+        def command(args, **kwargs):
+            self.assertEqual(args[0], 'get_property')
+            calls.append((args[1],kwargs));return {'data':values.get(args[1])}
+        scope={'Any':object,'_active_backend':lambda:('mpv',None),'_player_active':lambda:True,
+               '_current_metadata':lambda:{'pid':12,'started_at':1,'source_id':'synthetic'},
+               'command':command,'time':types.SimpleNamespace(monotonic=lambda:0,time=lambda:1000)}
+        exec(compile(ast.Module(body=[node],type_ignores=[]),'<fake status>','exec'),scope)
+        out=scope['status']()
+        self.assertEqual(out['mpv_observed_at'],1000)
+        self.assertTrue(out['audio_only']);self.assertNotIn('private',out['demuxer-cache-state'])
+        self.assertNotIn('decoded_frames',out)
+        extra=[kw['timeout'] for _,kw in calls if 'timeout' in kw]
+        self.assertEqual(len(extra),9);self.assertTrue(all(0<t<=0.15 for t in extra))
+        for mode in ('games','off','kiosk'):
+            scope['_active_backend']=lambda mode=mode:(mode,{'running':False} if mode=='kiosk' else None)
+            old=len(calls);scope['status']();self.assertEqual(old,len(calls))
+
+    def test_collect_and_action_invariance(self):
+        # Reuse the existing AST harness with MPV-only substitutions; no I/O probes.
+        tree=ast.parse((ROOT/'media_health.py').read_text())
+        harness=media_fixture.HealthIntegrationTests()
+        original=harness.collect
+        # Compile the harness itself, changing only synthetic mode/process fixtures.
+        harness_tree=ast.parse((ROOT/'test_media_health_progress.py').read_text())
+        cls=next(n for n in harness_tree.body if isinstance(n,ast.ClassDef))
+        node=copy.deepcopy(next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='collect'))
+        class Fixture(ast.NodeTransformer):
+            def visit_Constant(self,n):
+                return ast.copy_location(ast.Constant('mpv'),n) if n.value=='kiosk' else n
+            def visit_Lambda(self,n):
+                if isinstance(n.body,ast.Constant) and n.body.value is False and n.args.kwarg:
+                    n.body=ast.Constant(True)
+                return self.generic_visit(n)
+        node=ast.fix_missing_locations(Fixture().visit(node))
+        import test_media_health_progress as existing
+        scope=dict(vars(existing));scope['ROOT']=ROOT
+        # Inject only pure dependencies into the harness's extracted collect scope.
+        code=ast.unparse(node).replace("'youtube_progress_health': youtube_progress_health", "'mpv_progress_health': health, 'finite_number': finite_number, 'youtube_progress_health': youtube_progress_health")
+        scope.update(health=health,finite_number=finite_number)
+        exec(code,scope)
+        a=sample();a['mpv_observed_at']=980
+        previous={'mode':'mpv','checked_at':980,'player':a}
+        result=scope['collect'](harness,changed(a),previous)
+        self.assertEqual(result['playback_progress']['state'],'cache_starved')
+        self.assertEqual(result['overall'],'degraded')
+        self.assertIn('mpv_playback_progress',[c['code'] for c in result['checks']])
+        for name in ('select_repairs','execute_repair','watchdog','update_stall'):
+            before=ast.parse((ROOT.parent.parent/'baseline/backend/media_health.py').read_text())
+            fn=lambda t:next(n for n in t.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            self.assertEqual(ast.dump(fn(before)),ast.dump(fn(tree)))
+
+
+if __name__ == '__main__':
+    unittest.main()
