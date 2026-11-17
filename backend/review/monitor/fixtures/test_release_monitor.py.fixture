@@ -15,11 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def app_functions(*names, baseline=False, **bindings):
     path = ROOT.parent / 'baseline/backend/app.py' if baseline else ROOT / 'backend/app.py'
+    if not baseline:
+        names = (*names, "_monitor_provider_source_matches", "_history_source_season", "_history_source_episode",
+                 "_history_media_type", "_history_url_season_episode", "_season_number_from_text")
     tree = ast.parse(path.read_text())
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     for node in nodes:
         node.decorator_list = []
-    scope = dict(json=json, re=re, Response=object, **bindings)
+    from urllib.parse import urlparse
+    scope = dict(json=json, re=re, urlparse=urlparse, Response=object, **bindings)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), scope)
     return types.SimpleNamespace(**scope)
 
