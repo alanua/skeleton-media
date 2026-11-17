@@ -1,0 +1,217 @@
+"""Synthetic monitor tests. Never import the application or live discovery module."""
+import ast
+import json
+from pathlib import Path
+import re
+import tempfile
+import sqlite3
+import sys
+from unittest.mock import patch
+import types
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def app_functions(*names, baseline=False, **bindings):
+    path = ROOT.parent / 'baseline/backend/app.py' if baseline else ROOT / 'backend/app.py'
+    tree = ast.parse(path.read_text())
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    for node in nodes:
+        node.decorator_list = []
+    scope = dict(json=json, re=re, Response=object, **bindings)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), scope)
+    return types.SimpleNamespace(**scope)
+
+
+class ScanTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.jobs = Path(self.tmp.name)
+        self.discovery = types.SimpleNamespace(is_trailer_source=lambda s: s.get('trailer', False))
+
+    def scan(self, baseline=False):
+        return app_functions('_monitor_matches', '_monitor_scan_jobs', '_monitor_uk_source', baseline=baseline,
+                             JOBS=self.jobs, media_discovery=self.discovery)._monitor_scan_jobs
+
+    def put(self, uid, tmdb=0, kind='tv', trailer=False):
+        (self.jobs / 'synthetic.json').write_text(json.dumps({
+            'catalog': {'media_uid': uid, 'tmdb_id': tmdb, 'media_type': kind},
+            'sources': [{'season': '1', 'episode': '2', 'group': 'українською', 'trailer': trailer}]}))
+
+    def test_unrelated_zero_tmdb_does_not_match(self):
+        self.put('SYNTHETIC-B')
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 0, 1, 2))
+
+    def test_matching_uid_and_exact_episode(self):
+        self.put('SYNTHETIC-A')
+        self.assertTrue(self.scan()('SYNTHETIC-A', 0, 1, 2)['available'])
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 0, 1, 3))
+
+    def test_positive_tmdb_and_same_type(self):
+        self.put('SYNTHETIC-B', 901)
+        self.assertTrue(self.scan()('SYNTHETIC-A', 901, 1, 2)['available'])
+        self.put('SYNTHETIC-B', 901, 'movie')
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 901, 1, 2))
+
+    def test_blank_uid_and_trailer_never_match(self):
+        self.put('')
+        self.assertIsNone(self.scan()('', 0, 1, 2))
+        self.put('SYNTHETIC-A', trailer=True)
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 0, 1, 2))
+
+    def test_same_uid_wrong_type_red_green(self):
+        self.put('SYNTHETIC-A', kind='movie')
+        self.assertTrue(self.scan(baseline=True)('SYNTHETIC-A', 0, 1, 2)['available'])
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 0, 1, 2))
+
+    def test_unrelated_zero_red_green(self):
+        self.put('SYNTHETIC-B')
+        self.assertTrue(self.scan(baseline=True)('SYNTHETIC-A', 0, 1, 2)['available'])
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 0, 1, 2))
+
+    def test_malformed_history_id_does_not_abort_scan(self):
+        self.put('SYNTHETIC-B', tmdb='bad')
+        self.assertIsNone(self.scan()('SYNTHETIC-A', 901, 1, 2))
+        (self.jobs / 'valid.json').write_text(json.dumps({
+            'catalog': {'media_uid': 'SYNTHETIC-C', 'tmdb_id': 901, 'media_type': 'tv'},
+            'sources': [{'season': '1', 'episode': '2', 'group': 'українською'}]}))
+        self.assertTrue(self.scan()('SYNTHETIC-A', 901, 1, 2)['available'])
+
+    def test_group_requires_tv_and_tolerates_bad_id(self):
+        groups={'bad':{'jobs':[(0,{'catalog':{'media_uid':'SYNTHETIC-A','media_type':'movie'}}),
+                             (0,{'catalog':{'tmdb_id':'bad','media_type':'tv'}})]},
+                'good':{'jobs':[(0,{'catalog':{'media_uid':'SYNTHETIC-A','media_type':'tv'}})]}}
+        f=app_functions('_monitor_matches','_monitor_group',_video_history_groups=lambda:groups)
+        self.assertIs(f._monitor_group('SYNTHETIC-A',901),groups['good'])
+
+
+def load_monitor(db):
+    discovery=types.ModuleType('media_discovery');discovery.DB=db
+    discovery.is_trailer_source=lambda s:s.get('trailer',False)
+    discovery._get=lambda *a,**k:types.SimpleNamespace(text='Status Returning Series Synthetic episode (1x1, January 1, 2020)')
+    def persist(meta, *args):
+        with sqlite3.connect(db) as con:
+            con.execute('INSERT INTO media_items(media_uid,source_url,provider,media_type,title,tmdb_id,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+                        (meta['media_uid'],'https://synthetic.invalid/catalog','tmdb',meta['media_type'],meta['title'],meta['tmdb_id'],'{}','2020'))
+    discovery._persist=persist
+    bs4=types.ModuleType('bs4')
+    bs4.BeautifulSoup=lambda text,parser:types.SimpleNamespace(get_text=lambda *a,**k:text)
+    module=types.ModuleType('synthetic_release_monitor')
+    with patch.dict(sys.modules,{'media_discovery':discovery,'bs4':bs4}):
+        exec(compile((ROOT/'backend/media_release_monitor.py').read_text(),'media_release_monitor.py','exec'),module.__dict__)
+    return module
+
+
+class MonitorFlowTests(unittest.TestCase):
+    def setUp(self):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+        self.db=str(Path(tmp.name)/'synthetic.sqlite')
+        schema=json.loads((ROOT.parent/'context/schema.json').read_text())
+        with sqlite3.connect(self.db) as con:
+            con.execute(schema['media_items'])
+        self.m=load_monitor(self.db)
+        self.job={'catalog':{'media_uid':'SYNTHETIC-A','tmdb_id':901,'media_type':'tv','title':'Synthetic A'},
+                  'sources':[{'season':'1','episode':'1'}]}
+
+    def snap(self,episode=2,air='2020-01-02'):
+        return {'release_key':f'S01E{episode:02d}','season':1,'episode':episode,'air_date':air,'episode_title':'Synthetic episode','status':'Returning Series'}
+
+    def enable(self):
+        return self.m.set_for_job(self.job,True)
+
+    def test_real_tmdb_parser_and_canonical_registration_preserved(self):
+        self.assertEqual(self.m.tmdb_release_snapshot(901)['release_key'],'S01E01')
+        state=self.enable()
+        self.assertTrue(state['enabled']);self.assertTrue(state['monitor_supported'])
+        self.assertEqual(state['monitor_capability'],'tmdb')
+        self.assertEqual(self.m._get('SYNTHETIC-A')['baseline_release_key'],'S01E01')
+        with sqlite3.connect(self.db) as con:
+            self.assertEqual(con.execute('SELECT tmdb_id FROM media_items').fetchone()[0],901)
+            self.assertEqual(con.execute('PRAGMA foreign_key_check').fetchall(),[])
+
+    def test_explicit_opt_in_and_off(self):
+        state=self.m.ensure_auto_for_job(self.job)
+        self.assertFalse(state['enabled']);self.assertEqual(self.m.schedules(),[])
+        self.enable();self.assertTrue(self.m.schedules()[0]['enabled'])
+        self.m.set_for_job(self.job,False)
+        self.assertFalse(self.m.ensure_auto_for_job(self.job)['enabled'])
+        self.assertFalse(self.m.schedules()[0]['enabled'])
+        self.assertEqual(self.m.tick('SYNTHETIC-A','off',lambda *a:self.fail())['reason'],'MONITOR_DISABLED')
+
+    def test_non_tmdb_is_unsupported_without_creating_monitor(self):
+        with sqlite3.connect(self.db) as con:
+            con.execute('INSERT INTO media_items(media_uid,source_url,provider,media_type,title,tmdb_id,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+                        ('SYNTHETIC-P','https://synthetic.invalid/provider','synthetic','tv','Synthetic P',0,'{"official":true}','2020'))
+        job={'catalog':{'media_uid':'SYNTHETIC-P','tmdb_id':0,'media_type':'tv'}}
+        state=self.m.state_for_job(job)
+        self.assertFalse(state['monitor_supported']);self.assertEqual(state['monitor_reason'],'PROVIDER_EPISODE_PRODUCER_MISSING')
+        with self.assertRaises(self.m.MonitorUnsupported):self.m.set_for_job(job,True)
+        self.assertEqual(self.m._get('SYNTHETIC-P'),{})
+        self.assertFalse(self.m.set_for_job(job,False)['enabled'])
+
+    def test_future_pending_never_probed_or_notified(self):
+        self.enable();self.m.tmdb_release_snapshot=lambda _:self.snap(2,'2999-01-01')
+        out=self.m.tick('SYNTHETIC-A','future',lambda *a:self.fail('future probe'))
+        self.assertIsNone(out['notification']);self.assertEqual(self.m._get('SYNTHETIC-A')['state'],'RELEASE_KNOWN')
+
+    def test_due_pending_waits_for_source(self):
+        self.enable();self.m.tmdb_release_snapshot=lambda _:self.snap()
+        out=self.m.tick('SYNTHETIC-A','due',lambda *a:{'available':False})
+        self.assertIsNone(out['notification']);self.assertEqual(self.m._get('SYNTHETIC-A')['state'],'WAITING_FOR_TRANSLATION')
+
+    def test_notification_claim_retry_and_ack_idempotency(self):
+        self.enable();self.m.tmdb_release_snapshot=lambda _:self.snap()
+        probe=lambda *a:{'available':True,'capability':'uk_audio','provider':'synthetic'}
+        self.assertIsNotNone(self.m.tick('SYNTHETIC-A','one',probe)['notification'])
+        self.assertIsNone(self.m.tick('SYNTHETIC-A','two',probe)['notification'])
+        self.m.release_claim('SYNTHETIC-A','wrong')
+        self.assertEqual(self.m._get('SYNTHETIC-A')['alert_claim_occurrence'],'one')
+        self.m.release_claim('SYNTHETIC-A','one')
+        self.assertIsNotNone(self.m.tick('SYNTHETIC-A','three',probe)['notification'])
+        with self.assertRaises(ValueError):self.m.ack('SYNTHETIC-A','S01E02','wrong',1)
+        self.m.ack('SYNTHETIC-A','S01E02','three',1)
+        self.assertIsNone(self.m.tick('SYNTHETIC-A','four',probe)['notification'])
+        self.assertEqual(self.m._get('SYNTHETIC-A')['notified_release_key'],'S01E02')
+
+    def test_release_failure_retains_entire_state(self):
+        self.enable();before=self.m._get('SYNTHETIC-A')
+        def fail(_):raise TimeoutError('synthetic')
+        self.m.tmdb_release_snapshot=fail
+        out=self.m.tick('SYNTHETIC-A','failure',lambda *a:self.fail())
+        self.assertEqual(out['reason'],'RELEASE_CHECK_FAILED');self.assertEqual(self.m._get('SYNTHETIC-A'),before)
+
+    def test_probe_failure_retains_entire_state(self):
+        self.enable();before=self.m._get('SYNTHETIC-A');self.m.tmdb_release_snapshot=lambda _:self.snap()
+        def fail(*a):raise RuntimeError('synthetic')
+        self.assertEqual(self.m.tick('SYNTHETIC-A','failure',fail)['reason'],'LOCALIZATION_CHECK_FAILED')
+        self.assertEqual(self.m._get('SYNTHETIC-A'),before)
+        self.assertEqual(self.m.tick('SYNTHETIC-A','failure',lambda *a:{'error_code':'SYNTHETIC'})['reason'],'LOCALIZATION_CHECK_FAILED')
+        self.assertEqual(self.m._get('SYNTHETIC-A'),before)
+
+    def test_movie_capability_overrides_positive_tmdb(self):
+        self.job['catalog']['media_type']='movie'
+        self.assertFalse(self.m.state_for_job(self.job)['monitor_supported'])
+        with self.assertRaises(self.m.MonitorUnsupported):self.enable()
+
+    def test_initial_future_release_remains_pending(self):
+        self.m.tmdb_release_snapshot=lambda _:self.snap(1,'2999-01-01')
+        self.enable();row=self.m._get('SYNTHETIC-A')
+        self.assertFalse(row['baseline_release_key']);self.assertEqual(row['pending_release_key'],'S01E01')
+        self.assertIsNone(self.m.tick('SYNTHETIC-A','future',lambda *a:self.fail())['notification'])
+
+    def test_monitor_endpoints_map_unsupported_timeout_and_error(self):
+        request=types.SimpleNamespace(args={'job_id':'SYNTHETIC-JOB'},get_json=lambda **k:{'job_id':'SYNTHETIC-JOB','enabled':True})
+        for error,code in [(self.m.MonitorUnsupported('PROVIDER_EPISODE_PRODUCER_MISSING'),409),(TimeoutError(),504),(RuntimeError(),500)]:
+            def fail(_):raise error
+            f=app_functions('video_monitor_get','video_monitor_put',media_release_monitor=self.m,
+                            _require=lambda:None,request=request,jsonify=lambda value:value,_load=fail)
+            for endpoint in (f.video_monitor_get,f.video_monitor_put):
+                with self.subTest(code=code,endpoint=endpoint.__name__):
+                    payload,status=endpoint();self.assertEqual(status,code)
+                    if code==409:self.assertFalse(payload['monitor_supported'])
+
+
+if __name__ == '__main__':
+    unittest.main()
