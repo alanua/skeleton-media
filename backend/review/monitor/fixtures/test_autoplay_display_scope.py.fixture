@@ -1,0 +1,271 @@
+"""Actual EOF functions, temporary state files and fake player actions only."""
+import ast
+import json
+from pathlib import Path
+import tempfile
+import threading
+import types
+import unittest
+from unittest.mock import Mock
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class BusyLock:
+    def acquire(self, **kwargs):
+        return False
+
+    def release(self):
+        raise AssertionError("an unowned lock was released")
+
+
+class AutoplayScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.mode = root / 'mode'
+        self.current = root / 'current.json'
+        self.mode.write_text('mpv')
+        self.record = dict(job_id='SYNTHETIC-A', source_id='SOURCE-A', pid=123, started_at=1)
+        self.current.write_text(json.dumps(self.record))
+        self.pending = None
+        self.eof = True
+        self.actions = []
+        self.writes = []
+        self.enabled = True
+        self.on_sleep = lambda: None
+        self.selected = dict(job_id='SYNTHETIC-A', source_id='SOURCE-A')
+        self.mode_lock = threading.RLock()
+        self.playback_lock = threading.RLock()
+        self.next_job = dict(job_id='SYNTHETIC-B')
+        self.next_source = dict(source_id='SOURCE-B', season='1', episode='2', group='українською')
+        self.resolve = Mock(return_value=(self.next_job, self.next_source))
+        self.refresh = Mock(side_effect=lambda job, source: source)
+
+        def command(parts, **kwargs):
+            return dict(data=self.eof if parts[1] == 'eof-reached' else False)
+
+        def play(job, source, subtitles):
+            def owned(lock):
+                return lock._is_owned() if hasattr(lock, '_is_owned') else lock.locked() if hasattr(lock, 'locked') else False
+            self.actions.append(('play', job['job_id'],
+                                 owned(self.mode_lock), owned(self.playback_lock)))
+            self.current.write_text(json.dumps(dict(self.record, job_id=job['job_id'], source_id=source['source_id'])))
+            return dict(transition='in-place')
+
+        self.player = types.SimpleNamespace(
+            MODE_FILE=self.mode, CURRENT=self.current, _PLAYBACK_LOCK=self.playback_lock,
+            _current_tv_mode=lambda: self.mode.read_text().strip(),
+            _mode_transition_target=lambda: self.pending,
+            command=command, play=Mock(side_effect=play),
+            stop=lambda: self.actions.append(('stop',)),
+            status=lambda: dict(running=False))
+        self.scope = dict(
+            json=json, player=self.player,
+            time=types.SimpleNamespace(time=lambda: 1000, sleep=lambda _: self.on_sleep()),
+            _MODE_LOCK=self.mode_lock, _AUTOPLAY_LOCK=threading.Lock(),
+            _video_autoplay_read=lambda: dict(enabled=self.enabled),
+            _video_autoplay_runtime=lambda **kwargs: kwargs,
+            _load=lambda _: dict(job_id='SYNTHETIC-A'),
+            _autoplay_media_is_series=lambda _: True,
+            _autoplay_match_current_source=lambda *args: dict(source_id='SOURCE-A'),
+            _autoplay_resolve_next_job=self.resolve,
+            _refresh_stale_source=self.refresh,
+            resolver=types.SimpleNamespace(materialize_source=lambda source: source),
+            _video_selection_write=self.writes.append,
+            _history_record_playback_preference=lambda *args: None,
+            _history_id_for_job=lambda _: 'SYNTHETIC-HISTORY',
+            _video_selection_read=lambda: self.selected,
+            _screensaver_settings=lambda: dict(enabled=True, type='auto'),
+            _screensaver_control=lambda *args: self.actions.append(('saver',)) or dict(applied=True),
+        )
+        names = {'_video_eof_context', '_video_eof_ready', '_video_autoplay_commit', '_video_autoplay_advance',
+                 '_video_eof_dispatch', '_video_eof_fallback_to_screensaver'}
+        tree = ast.parse((ROOT / 'backend/app.py').read_text())
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), '<actual EOF functions>', 'exec'), self.scope)
+
+    def call(self, name='_video_eof_dispatch', *args):
+        return self.scope[name](*args)
+
+    def test_other_modes_never_advance_or_stop(self):
+        for mode in ['kiosk', 'games', 'off', 'tv', 'chrome', 'unknown']:
+            with self.subTest(mode=mode):
+                self.mode.write_text(mode)
+                self.actions.clear()
+                self.call()
+                self.assertEqual(self.actions, [])
+        self.resolve.assert_not_called()
+
+    def test_direct_advance_cannot_bypass_mode_scope(self):
+        self.mode.write_text('kiosk')
+        self.call('_video_autoplay_advance')
+        self.assertEqual(self.actions, [])
+
+    def test_fallback_cannot_stop_youtube(self):
+        self.mode.write_text('kiosk')
+        self.call('_video_eof_fallback_to_screensaver', 'SYNTHETIC-A', 'SOURCE-A', dict(status='disabled'))
+        self.assertEqual(self.actions, [])
+
+    def test_current_series_still_advances_under_both_locks(self):
+        out = self.call()
+        self.assertEqual(out['status'], 'autoplay_owned')
+        self.assertEqual(self.actions, [('play', 'SYNTHETIC-B', True, True)])
+        self.assertEqual(self.writes[0]['job_id'], 'SYNTHETIC-B')
+
+    def test_pending_explicit_mode_request_wins(self):
+        self.pending = 'games'
+        self.call()
+        self.assertEqual(self.actions, [])
+        self.resolve.assert_not_called()
+
+    def test_pending_same_mode_request_also_wins(self):
+        self.pending = 'mpv'
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_stale_eof_for_new_playback_is_ignored(self):
+        self.eof = False
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_unreadable_ipc_is_not_an_eof(self):
+        self.player.command = Mock(side_effect=TimeoutError)
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_mode_changed_during_resolution_wins(self):
+        def resolve(*args):
+            self.mode.write_text('kiosk')
+            return self.next_job, self.next_source
+        self.resolve.side_effect = resolve
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_switch_away_and_back_invalidates_old_resolution(self):
+        def resolve(*args):
+            self.mode.write_text('kiosk')
+            self.mode.write_text('mpv')
+            return self.next_job, self.next_source
+        self.resolve.side_effect = resolve
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_new_source_during_resolution_wins(self):
+        def resolve(*args):
+            self.current.write_text(json.dumps(dict(self.record, source_id='EXPLICIT-SOURCE')))
+            return self.next_job, self.next_source
+        self.resolve.side_effect = resolve
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_same_identity_reopened_during_resolution_invalidates_old_eof(self):
+        def resolve(*args):
+            self.current.write_text(json.dumps(self.record))
+            return self.next_job, self.next_source
+        self.resolve.side_effect = resolve
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_seek_away_during_resolution_cancels_old_eof(self):
+        def resolve(*args):
+            self.eof = False
+            return self.next_job, self.next_source
+        self.resolve.side_effect = resolve
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_fallback_mode_changed_after_delay_wins(self):
+        self.on_sleep = lambda: self.mode.write_text('kiosk')
+        self.call('_video_eof_fallback_to_screensaver', 'SYNTHETIC-A', 'SOURCE-A', dict(status='disabled'))
+        self.assertEqual(self.actions, [])
+
+    def test_fallback_new_source_after_delay_wins(self):
+        self.on_sleep = lambda: self.current.write_text(json.dumps(dict(self.record, source_id='EXPLICIT')))
+        self.call('_video_eof_fallback_to_screensaver', 'SYNTHETIC-A', 'SOURCE-A', dict(status='disabled'))
+        self.assertEqual(self.actions, [])
+
+    def test_end_of_current_series_still_starts_saver(self):
+        self.resolve.return_value = None
+        self.call()
+        self.assertEqual(self.actions, [('stop',), ('saver',)])
+
+    def test_pending_new_job_is_not_covered_by_saver(self):
+        self.resolve.return_value = None
+        self.selected = dict(job_id='EXPLICIT-JOB')
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_busy_mode_lock_does_not_queue_stale_autoplay(self):
+        self.mode_lock = BusyLock()
+        self.scope['_MODE_LOCK'] = self.mode_lock
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_busy_playback_lock_does_not_queue_stale_autoplay(self):
+        self.playback_lock = BusyLock()
+        self.player._PLAYBACK_LOCK = self.playback_lock
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_changed_mode_after_failed_play_is_not_retried(self):
+        def fail(*args):
+            self.mode.write_text('kiosk')
+            raise RuntimeError('synthetic load failure')
+        self.player.play.side_effect = fail
+        self.call()
+        self.assertEqual(self.player.play.call_count, 1)
+        self.refresh.assert_not_called()
+
+    def test_malformed_current_cannot_trigger_autoplay(self):
+        self.current.write_text('{}')
+        self.call()
+        self.assertEqual(self.actions, [])
+
+    def test_valid_source_refresh_remains_outside_mode_and_player_locks(self):
+        success = self.player.play.side_effect
+        attempts = []
+        def play(*args):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError('synthetic expired source')
+            return success(*args)
+        def refresh(job, source):
+            self.assertFalse(self.mode_lock._is_owned())
+            self.assertFalse(self.playback_lock._is_owned())
+            return source
+        self.player.play.side_effect = play
+        self.refresh.side_effect = refresh
+        result = self.call()
+        self.assertEqual(result['status'], 'autoplay_owned')
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(self.actions, [('play', 'SYNTHETIC-B', True, True)])
+
+    def test_actual_nonreentrant_mode_lock_works_for_advance(self):
+        self.mode_lock = threading.Lock()
+        self.scope['_MODE_LOCK'] = self.mode_lock
+        self.call()
+        self.assertEqual(self.actions, [('play', 'SYNTHETIC-B', True, True)])
+
+    def test_actual_nonreentrant_mode_lock_works_for_saver(self):
+        self.mode_lock = threading.Lock()
+        self.scope['_MODE_LOCK'] = self.mode_lock
+        self.resolve.return_value = None
+        def saver(*args):
+            self.assertTrue(self.mode_lock.locked())
+            self.assertTrue(self.playback_lock._is_owned())
+            self.actions.append(('saver',))
+            return dict(applied=True)
+        self.scope['_screensaver_control'] = saver
+        self.call()
+        self.assertEqual(self.actions, [('stop',), ('saver',)])
+
+    def test_empty_context_cannot_be_committed_in_another_mode(self):
+        self.mode.write_text('kiosk')
+        self.call('_video_autoplay_commit', None, self.next_job, self.next_source)
+        self.assertEqual(self.actions, [])
+
+
+if __name__ == '__main__':
+    unittest.main()
