@@ -41,13 +41,14 @@ class HLSRecovery:
         self._attempts = {}
 
     def run(self, *, job, source, snapshot, revision, resolve, command,
-            mutation_guard, commit, clock, sleep, transport_options=None):
+            mutation_guard, commit, clock, sleep, transport_options=None, restore_tracks=None):
         if not self._lock.acquire(blocking=False):
             return {'state': 'busy', 'loaded': False}
         loaded = False
         try:
             first = snapshot()
             rev = revision()
+            expected = deepcopy(first)
             pos = number(first.get('position'))
             if (type(rev) is not int or rev < 0 or first.get('mode') != 'mpv'
                     or first.get('endpoint') != 'home_edge_01'
@@ -65,9 +66,10 @@ class HLSRecovery:
                 return {'state': 'ineligible', 'loaded': False}
             # Two independent starvation samples: a single buffering sample is
             # insufficient. An operator intent at any point invalidates work.
-            def check(current, *, after_load=False, staged=False):
+            def check(current, *, after_load=False, staged=False, remapping=False):
                 p = number(current.get('position'))
-                if (revision() != rev or not same(first, current)
+                if (revision() != rev or any(expected.get(k) != current.get(k)
+                        for k in IDENTITY if not (remapping and k in ('aid','sid','sub_visibility')))
                         or (current.get('pause') is not False and not (staged and current.get('pause') is True))
                         or current.get('seeking') is not False or p is None
                         or (not after_load and abs(p-pos) > .5)):
@@ -126,7 +128,7 @@ class HLSRecovery:
                 current = snapshot()
                 # The load's staged pause is allowed only under the captured
                 # revision. Operator pause invalidates that revision at entry.
-                check(current, after_load=True, staged=True)
+                check(current, after_load=True, staged=True, remapping=restore_tracks is not None)
                 if current.get('path') == fresh['url'] and current.get('loaded') is True:
                     if current.get('pause') is not True or abs(number(current.get('position'))-pos) > 2:
                         return {'state': 'preservation_unverified', 'loaded': True}
@@ -134,6 +136,21 @@ class HLSRecovery:
                 if clock() >= deadline:
                     return {'state': 'load_unverified', 'loaded': True}
                 sleep(.2)
+            if restore_tracks is not None:
+                # The adapter must restore/verify semantic content under the same
+                # revision lock. Raw MPV IDs may legitimately change after load.
+                restored = restore_tracks(fresh, expected_revision=rev)
+                if (not isinstance(restored, dict) or restored.get('path') != fresh['url']
+                        or restored.get('loaded') is not True or restored.get('pause') is not True):
+                    return {'state': 'preservation_unverified', 'loaded': True}
+                check(restored, after_load=True, staged=True, remapping=True)
+                for field in ('aid', 'sid'):
+                    value = restored.get(field)
+                    if value != 'no' and (type(value) is not int or value <= 0):
+                        raise RecoveryCancelled()
+                    expected[field] = value
+                if restored.get('sub_visibility') != first.get('sub_visibility'):
+                    raise RecoveryCancelled()
             with mutation_guard():
                 staged = snapshot()
                 staged_pos = check(staged, after_load=True, staged=True)
