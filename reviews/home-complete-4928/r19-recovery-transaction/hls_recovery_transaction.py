@@ -57,7 +57,7 @@ class HLSRecovery:
                     or first.get('live') is not False
                     or not first.get('session') or not first.get('job_id')
                     or not first.get('source_id') or pos is None or pos < 0
-                    or first.get('job_id') != job.get('id')
+                    or first.get('job_id') != (job.get('job_id') or job.get('id'))
                     or first.get('source_id') != source.get('source_id')
                     or source.get('has_drm') or source.get('drm')
                     or not str(source.get('url', '')).startswith(('https://', 'http://'))
