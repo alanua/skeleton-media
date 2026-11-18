@@ -1,3 +1,15 @@
+# REJECTED for receiver deduplication — rolled back
+
+The operator's 2026-11-18 19:52 phone screenshot still shows **Samsung SmartTV** and **YouTube on TV**, both marked as playing YouTube. At that time the proposed guard was active and its LR_AUTOCONNECT action absent. Therefore this adapter did not achieve the requested deduplication. **Do not deploy it as a fix.**
+
+The exact original manager was restored, the opt-in manifest disabled and the native registrar restored through the registered rollback. Independent postflight preserved the manual screen, preflight pairing identities, same-source active playback, volume, mode and MPV record. No phone pairings, accounts or browser process were reset. Private failure/rollback evidence was persisted.
+
+Follow-up read-only identity comparison shows the actual connected native MDX screen and device IDs equal their existing saved identities. One backend receiver identity is established; the Android picker identifiers for its two labels remain unavailable. Native MobileKey source can build the Samsung SmartTV label, but no initialized registered MobileKey service was found in the bounded existing-object check. This does not prove a replacement cause and does not justify disabling another service. Do not infer cache expiry or repeat the rejected change without new evidence.
+
+---
+
+## Historical experiment (not current runtime)
+
 # Single native YouTube receiver review — Skeleton#4318 / #4928
 
 The operator confirmed both native phone targets connect and requested keeping only **YouTube TV**.
