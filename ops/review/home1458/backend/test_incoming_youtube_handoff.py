@@ -1,5 +1,6 @@
 """Isolated shell harness: no real player, controller, input or device actions."""
 import hashlib
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -13,7 +14,7 @@ DIGEST = hashlib.sha256(VIDEO.encode()).hexdigest()
 
 
 class IncomingHandoffTests(unittest.TestCase):
-    def run_handoff(self, *, initial=None, final=None, digest=DIGEST, chrome=True, focus=True):
+    def run_handoff(self, *, initial=None, final=None, digest=DIGEST, chrome=True, focus=True, park=True):
         initial = initial if initial is not None else {'running':True,'pause':False,'player_state':1,'video_id':VIDEO}
         final = final if final is not None else initial
         with tempfile.TemporaryDirectory() as tmp:
@@ -21,15 +22,18 @@ class IncomingHandoffTests(unittest.TestCase):
             data.write_text(json.dumps([initial,final]))
             helper=p/'chrome'; helper.write_text('#!/usr/bin/python3\nimport json,pathlib\np=pathlib.Path('+repr(str(count))+')\nn=int(p.read_text()) if p.exists() else 0\np.write_text(str(n+1))\nprint(json.dumps(json.loads(pathlib.Path('+repr(str(data))+').read_text())[min(n,1)]))\n'); helper.chmod(0o700)
             script='set -e\nCHROME_MEDIA='+str(helper)+'\n'
+            script+=INCOMING_FUNCTIONS+'\n'
             script+='event(){ echo "$1" >> '+str(log)+'; }\n'
             for name in ['exit_gnome_overview','park_or_stop_mpv_for_browser','stop_games','hide_parked_mpv_for_browser','switch_tty2']:
                 script+=name+'(){ event '+name+'; }\n'
             for name in ['restore_youtube','safe_start_volume','normalize_volume','ensure_hyperhdr','stop_chrome','start_chrome_cold']:
                 script+=name+'(){ event forbidden_'+name+'; return 90; }\n'
+            script+='park_mpv_for_incoming(){ event park_or_stop_mpv_for_browser; return '+str(0 if park else 1)+'; }\n'
+            script+='hide_parked_mpv_for_incoming(){ event hide_parked_mpv_for_browser; }\n'
             script+='process_running(){ return '+str(0 if chrome else 1)+'; }\n'
-            script+='focus_chrome_wait(){ event focus; return '+str(0 if focus else 1)+'; }\n'
-            script+='sleep(){ :; }\nlog(){ :; }\n'+INCOMING_FUNCTIONS+'\nstart_kiosk_incoming '+repr(digest)+'\nevent committed\n'
-            result=subprocess.run(['/bin/bash','-c',script],capture_output=True,text=True,timeout=5)
+            script+='focus_incoming_chrome(){ event focus; return '+str(0 if focus else 1)+'; }\n'
+            script+='sleep(){ :; }\nlog(){ :; }\n'+'\nstart_kiosk_incoming '+repr(digest)+'\nevent committed\n'
+            result=subprocess.run(['/bin/bash','-c',script],capture_output=True,text=True,timeout=5,env={**os.environ,'HOME':str(p)})
             return result.returncode, log.read_text().splitlines() if log.exists() else []
 
     def test_preserves_incoming_media_and_parks_before_focus(self):
@@ -37,6 +41,12 @@ class IncomingHandoffTests(unittest.TestCase):
         self.assertEqual(events[-1],'committed'); self.assertNotIn('restore_youtube',events)
         self.assertLess(events.index('hide_parked_mpv_for_browser'),events.index('focus'))
         self.assertFalse(any(x.startswith('forbidden_') for x in events))
+    def test_failed_park_never_continues_to_hide_focus_or_commit(self):
+        rc,events=self.run_handoff(park=False)
+        self.assertNotEqual(rc,0)
+        self.assertNotIn('hide_parked_mpv_for_browser',events)
+        self.assertNotIn('focus',events);self.assertNotIn('committed',events)
+
     def test_mismatched_clip_refuses_before_any_surface_change(self):
         rc,events=self.run_handoff(digest='b'*64); self.assertNotEqual(rc,0); self.assertEqual(events,[])
     def test_missing_event_digest_refuses_before_any_change(self):
@@ -58,15 +68,18 @@ class IncomingHandoffTests(unittest.TestCase):
     def test_patch_exact_dispatch_footer_and_idempotency(self):
         base='start_kiosk() {\n    :\n}\ncase "$MODE" in\n    kiosk) log "switch kiosk"; start_kiosk ;;\nesac\nif [[ "$MODE" != off ]]; then normalize_volume; ensure_hyperhdr; fi\n'
         patched=patch_controller(base)
-        self.assertIn('start_kiosk_incoming "${2:-}" || exit $?',patched)
+        self.assertIn('start_kiosk_incoming_guarded "${2:-}" "${3:-}" || exit $?',patched)
         self.assertIn('${INCOMING_YOUTUBE_HANDOFF:-0}',patched)
         subprocess.run(['/bin/bash','-n'],input=patched,text=True,check=True)
         with self.assertRaises(ValueError):patch_controller(patched)
         with self.assertRaises(ValueError):patch_controller(base.replace('normalize_volume','other'))
-    def test_wrapper_normalizes_incoming_requested_mode(self):
-        base='case "${1:-}" in\n  chrome|kiosk|mpv|games|off) requested="${1:-}" ;;\n  *) requested="" ;;\nesac\n'
-        patched=patch_wrapper(base); self.assertIn('kiosk-incoming) requested=kiosk ;;',patched)
+    def test_wrapper_preserves_newer_incoming_mode_request(self):
+        base='case "${1:-}" in\n  chrome|kiosk|mpv|games|off) requested="${1:-}" ;;\n  *) requested="" ;;\nesac\nrm -f "$REQUEST_FILE"\n'
+        patched=patch_wrapper(base)
+        self.assertIn('if [[ "${1:-}" != kiosk-incoming ]]',patched)
+        self.assertNotIn('kiosk-incoming) requested=kiosk',patched)
         with self.assertRaises(ValueError):patch_wrapper(patched)
+
 
 
 if __name__=='__main__':unittest.main()
