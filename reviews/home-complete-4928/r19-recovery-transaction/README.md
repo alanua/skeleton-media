@@ -2,7 +2,7 @@
 
 When an owned VOD MPV session remains paused for cache across two observations, the existing progress monitor can resolve the saved origin, load the exact work/season/episode/voice at the retained position while paused, restore semantic audio/subtitle selections, then resume only under the unchanged user intent. Success requires both video-clock progress and independently observed decoded-image changes before publishing the new source/current/last-VOD state.
 
-This patch has not been activated in production. Production TV/provider/Redmi/Pixel acceptance remains unverified. Do not deploy the rejected admission-only prototype or reconstruct the runtime from old public main.
+Applied to the reviewed production backend on 2026-11-19 through the registered idle-only Home Edge operation. Independent application-state checks confirmed unchanged paused YouTube identity/position, Chrome processes, selected mode and current record, plus exact installed hashes and a healthy new backend PID. Actual production-provider recovery and physical TV/Redmi/Pixel acceptance remain unverified. Do not deploy the rejected admission-only prototype or reconstruct the runtime from old public main.
 
 ## Runtime integration
 
