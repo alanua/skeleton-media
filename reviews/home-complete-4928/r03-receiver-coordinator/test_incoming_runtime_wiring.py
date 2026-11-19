@@ -51,6 +51,13 @@ class ExistingMonitorWiringTests(unittest.TestCase):
         ns['_incoming_youtube_tick']()
         self.assertEqual(writes[0],dict(schema='skeleton.incoming-youtube-result.v1',
             checked_at=1000,state='failed'))
+    def test_permission_denial_halts_retries_until_conditions_change(self):
+        ns,now,calls,writes=self.helper({'state':'observer_unavailable','error_type':'PermissionError','error_site':'fixture:read:1'})
+        ns['_incoming_youtube_tick']();now[0]+=300;ns['_incoming_youtube_tick']()
+        self.assertEqual(len(calls),1)
+        self.assertTrue(writes[0]['retry_blocked'])
+        self.assertEqual(writes[0]['error_site'],'fixture:read:1')
+
     def test_runtime_exception_has_retry_backoff_and_does_not_escape(self):
         ns,now,calls,writes=self.helper({})
         ns['_INCOMING_YOUTUBE_RUNTIME'].tick=lambda:(_ for _ in ()).throw(RuntimeError('private'))
