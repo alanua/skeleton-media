@@ -56,6 +56,12 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(f.run()['state'],'youtube_verified');self.assertEqual(f.sent,[])
         f=self.fixture();f.ctx['mode']='kiosk';f.surface=False
         self.assertEqual(f.run()['state'],'handoff_unverified');self.assertEqual(f.published,[])
+    def test_fresh_load_can_repair_hidden_surface_even_if_mode_already_youtube(self):
+        f=self.fixture();f.ctx['mode']='kiosk';f.surface=False
+        f.after_send=lambda:setattr(f,'surface',True)
+        self.assertEqual(f.run()['state'],'youtube_verified')
+        self.assertEqual(f.sent,[HASH]);self.assertEqual(len(f.published),1)
+
     def test_acknowledged_handoff_without_actual_mode_or_surface_never_publishes(self):
         for target in ('mode','surface','overlay'):
             f=self.fixture()
