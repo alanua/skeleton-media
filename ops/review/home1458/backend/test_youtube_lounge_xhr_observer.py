@@ -82,4 +82,30 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(any(x['params'].get('functionDeclaration')==READ_RECEIVER_FN for x in transport.sent))
 
 
+
+
+class FreshEventOutputTests(unittest.TestCase):
+    def test_initial_batch_all_streams_are_priming_not_actionable(self):
+        t=SnapshotTracker()
+        events=t.consume([snapshot(frame([load(1)])),snapshot(frame([load(2)]),URL+'&zx=two')])
+        self.assertEqual(events,[])
+        self.assertFalse(t.report()['fresh_media_load_observed'])
+    def test_fresh_append_returns_hashed_endpoint_independent_evidence(self):
+        t=SnapshotTracker();old=frame([load(1)]);self.assertEqual(t.consume([snapshot(old)]),[])
+        events=t.consume([snapshot(old+frame([load(2,'BBBBBBBBBBB')]))])
+        self.assertEqual(len(events),1)
+        e=events[0];self.assertEqual(e['sequence'],2);self.assertEqual(e['observation_kind'],'append')
+        self.assertEqual(len(e['session_digest']),64);self.assertEqual(len(e['stream_digest']),64)
+        for private in ['private-session','private-token','AAAAAAAAAAA','BBBBBBBBBBB','youtube.com']:
+            self.assertNotIn(private,json.dumps(events))
+        self.assertEqual(t.consume([snapshot(old+frame([load(2,'BBBBBBBBBBB')]))]),[])
+    def test_first_seen_request_has_explicit_new_request_proof_requirement(self):
+        t=SnapshotTracker();t.consume([snapshot(frame([load(1)]))])
+        events=t.consume([snapshot(frame([load(2)]),URL+'&zx=two')])
+        self.assertEqual(events[0]['observation_kind'],'new_request')
+    def test_unknown_session_and_reset_never_return_actionable_events(self):
+        t=SnapshotTracker();t.consume([snapshot(frame([load(1),load(2)]))])
+        self.assertEqual(t.consume([snapshot(frame([load(3)]))]),[])
+        self.assertEqual(t.consume([snapshot(frame([load(7)]),URL.replace('private-session','other'))]),[])
+
 if __name__=='__main__':unittest.main()
