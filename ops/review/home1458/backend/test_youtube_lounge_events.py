@@ -35,7 +35,7 @@ class LoungeTests(unittest.TestCase):
     def test_invalid_selection_is_not_promoted(self):
         variants=[{}, {'videoId':'bad'}, {'videoId':True}, {'videoIds':'AAAAAAAAAAA','currentIndex':'1'},
             {'videoIds':'AAAAAAAAAAA','currentIndex':False},{'videoId':'BBBBBBBBBBB','videoIds':'AAAAAAAAAAA','currentIndex':'0'},
-            {'videoId':'AAAAAAAAAAA','currentTime':'NaN'},{'videoId':'AAAAAAAAAAA','currentTime':-1}]
+            {'videoId':'AAAAAAAAAAA','currentTime':'NaN'},{'videoId':'AAAAAAAAAAA','currentTime':-2}]
         for args in variants:
             s=LoungeStream(-1);s.feed(frame([[0,['setPlaylist',args]]]))
             self.assertEqual(s.evidence,[],args)
@@ -67,5 +67,25 @@ class LoungeTests(unittest.TestCase):
             'https://www.youtube.com/api/lounge/bc/bind?device=LOUNGE_SCREEN#private']:
             self.assertIsNone(receiver_request(url),url)
 
+
+
+
+class TimingCompatibilityTests(unittest.TestCase):
+    def test_negative_one_timing_metadata_does_not_hide_a_valid_load(self):
+        import hashlib
+        for value in (-1,'-1'):
+            stream=LoungeStream(0)
+            stream.feed(frame([[1,['setPlaylist',{'videoIds':'AAAAAAAAAAA,BBBBBBBBBBB','currentIndex':'1','currentTime':value}]]]))
+            self.assertEqual(len(stream.evidence),1)
+            self.assertEqual(stream.evidence[0].video_sha256,hashlib.sha256(b'BBBBBBBBBBB').hexdigest())
+    def test_numeric_and_string_playlist_index_preserve_exact_selection(self):
+        for index in (0,'0'):
+            stream=LoungeStream(0)
+            stream.feed(frame([[1,['setPlaylist',{'videoIds':'AAAAAAAAAAA','currentIndex':index}]]]))
+            self.assertEqual(len(stream.evidence),1)
+    def test_negative_one_never_makes_an_invalid_video_identity_acceptable(self):
+        stream=LoungeStream(0)
+        stream.feed(frame([[1,['setVideo',{'videoId':'bad','currentTime':-1}]]]))
+        self.assertEqual(stream.evidence,[])
 
 if __name__=='__main__':unittest.main()
