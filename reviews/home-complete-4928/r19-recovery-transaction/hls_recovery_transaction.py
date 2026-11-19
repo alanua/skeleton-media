@@ -41,7 +41,7 @@ class HLSRecovery:
         self._attempts = {}
 
     def run(self, *, job, source, snapshot, revision, resolve, command,
-            mutation_guard, commit, clock, sleep, transport_options=None, restore_tracks=None):
+            mutation_guard, commit, clock, sleep, transport_options=None, restore_tracks=None, reserve_budget=None):
         if not self._lock.acquire(blocking=False):
             return {'state': 'busy', 'loaded': False}
         loaded = False
@@ -83,16 +83,29 @@ class HLSRecovery:
                 return {'state': 'no_longer_starved', 'loaded': False}
             key = (first['endpoint'], first['session'])
             now = clock()
-            count, previous = self._attempts.get(key, (0, float('-inf')))
-            if count >= 2:
-                return {'state': 'retry_exhausted', 'loaded': False}
-            if now - previous < 60:
-                return {'state': 'cooldown', 'loaded': False}
-            # Failed resolve also consumes an attempt. Bounded state lifetime:
-            # stop admitting new sessions at the capacity bound.
-            if key not in self._attempts and len(self._attempts) >= 128:
-                return {'state': 'session_capacity', 'loaded': False}
-            self._attempts[key] = (count+1, now)
+            if reserve_budget is not None:
+                reservation = reserve_budget(deepcopy(first), now)
+                if not isinstance(reservation, dict):
+                    return {'state': 'budget_unavailable', 'loaded': False}
+                state = reservation.get('state')
+                if state != 'reserved':
+                    allowed = {'cooldown','retry_exhausted','session_capacity','budget_unavailable'}
+                    return {'state': state if state in allowed else 'budget_unavailable', 'loaded': False}
+                attempt = reservation.get('attempt')
+                if type(attempt) is not int or not 1 <= attempt <= 2:
+                    return {'state': 'budget_unavailable', 'loaded': False}
+                count = attempt-1
+            else:
+                count, previous = self._attempts.get(key, (0, float('-inf')))
+                if count >= 2:
+                    return {'state': 'retry_exhausted', 'loaded': False}
+                if now - previous < 60:
+                    return {'state': 'cooldown', 'loaded': False}
+                # Failed resolve also consumes an attempt. Bounded state lifetime:
+                # stop admitting new sessions at the capacity bound.
+                if key not in self._attempts and len(self._attempts) >= 128:
+                    return {'state': 'session_capacity', 'loaded': False}
+                self._attempts[key] = (count+1, now)
             detached = deepcopy(job)
             fresh = resolve(detached, deepcopy(source), timeout=12)
             if (not isinstance(fresh, dict) or not isinstance(fresh.get('url'), str)
