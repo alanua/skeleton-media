@@ -120,6 +120,16 @@ class RuntimeAdapterTests(unittest.TestCase):
             handler({'method':'Network.responseReceived','params':{'requestId':'new','response':{'url':url,'status':200}}})
         f.on_read=proof
         self.assertEqual(f.tick()['state'],'youtube_verified')
+    def test_permission_error_reports_only_sanitized_code_site(self):
+        f=self.fixture()
+        def denied():raise PermissionError('private-token-do-not-log')
+        f.runtime.reader_factory=denied
+        result=f.tick()
+        self.assertEqual(result['state'],'observer_unavailable')
+        self.assertEqual(result['error_type'],'PermissionError')
+        self.assertIn(':denied:',result['error_site'])
+        self.assertNotIn('private-token',json.dumps(result))
+
     def test_observation_only_never_actuates_or_publishes(self):
         f=self.fixture();f.runtime.actuate=False;f.tick();f.fresh()
         result=f.tick();self.assertEqual(result['state'],'observation_only')
