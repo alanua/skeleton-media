@@ -6,6 +6,11 @@ import math
 import threading
 
 
+class RecoveryLoadPending(RuntimeError):
+    """Owned load has not exposed complete MPV properties yet."""
+    pass
+
+
 class RecoveryCancelled(RuntimeError):
     pass
 
@@ -138,7 +143,15 @@ class HLSRecovery:
             # Load is staged paused; never resume before exact path validation.
             deadline = clock()+8
             while True:
-                current = snapshot()
+                try:
+                    current = snapshot()
+                except RecoveryLoadPending:
+                    if revision() != rev:
+                        raise RecoveryCancelled()
+                    if clock() >= deadline:
+                        return {'state':'load_unverified','loaded':True}
+                    sleep(.2)
+                    continue
                 # The load's staged pause is allowed only under the captured
                 # revision. Operator pause invalidates that revision at entry.
                 check(current, after_load=True, staged=True, remapping=restore_tracks is not None)
