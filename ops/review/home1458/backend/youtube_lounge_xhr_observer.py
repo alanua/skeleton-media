@@ -150,7 +150,9 @@ def connect_reader():
     if len(pages)!=1:raise RuntimeError('Missing or ambiguous receiver target')
     url=pages[0].get('webSocketDebuggerUrl','');u=urlsplit(url)
     if u.scheme!='ws' or u.hostname!='127.0.0.1' or u.port!=9223 or not u.path.startswith('/devtools/page/'):raise RuntimeError('Unexpected debugger transport')
-    return NativeXHRReader(websocket.create_connection(url,timeout=3,origin='http://127.0.0.1:9223'))
+    reader=NativeXHRReader(websocket.create_connection(url,timeout=3,origin='http://127.0.0.1:9223'))
+    reader.target_id=pages[0].get('id')
+    return reader
 
 
 def observe(seconds=15):
