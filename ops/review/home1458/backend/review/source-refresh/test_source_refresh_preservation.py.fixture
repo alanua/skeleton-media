@@ -1,0 +1,148 @@
+import ast
+import copy
+import hashlib
+import json
+from pathlib import Path
+import re
+import time
+from types import SimpleNamespace
+import unittest
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RefreshPreservation(unittest.TestCase):
+    def setUp(self):
+        self.saved = []
+        self.calls = []
+        self.job = {'job_id': 'owned', 'catalog': {'media_type': 'tv', 'tmdb_id': 31},
+                    'page_url': 'https://source.example/show-season-2.html', 'season': '2'}
+        self.stale = {'source_id': 'old', 'url': 'https://cdn.example/S02E03/old.m3u8',
+                      'episode': '3', 'season': '2', 'group': 'Українська', 'quality': '720p'}
+        self.other = {**self.stale, 'source_id': 'other', 'episode': '4',
+                      'url': 'https://cdn.example/S02E04/other.m3u8'}
+        self.job['sources'] = [self.stale, self.other]
+        self.fresh = {**self.stale, 'url': 'https://cdn.example/S02E03/new.m3u8'}
+        # This is the actual resolver shape: it does not return canonical IDs.
+        self.result = {'title': 'A provider title', 'poster': '', 'sources': [self.fresh], 'errors': []}
+        self.ns = dict(re=re, hashlib=hashlib, time=time, urlparse=urlparse,
+                       media_discovery=SimpleNamespace(is_trailer_source=lambda s: bool(s.get('is_trailer'))),
+                       _autoplay_is_trailer=lambda s: bool(s.get('trailer')),
+                       _history_media_type=lambda j: j.get('catalog', {}).get('media_type', 'tv'),
+                       _season_number_from_text=lambda value: int(value) if str(value).isdigit() else None,
+                       _save=lambda j: self.saved.append(copy.deepcopy(j)),
+                       resolve_page=self.resolve)
+        for code in json.loads((ROOT/'tests/refresh_helper_snapshot.json').read_text()).values():
+            exec(code, self.ns)
+        tree = ast.parse((ROOT/'backend/app.py').read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_refresh_stale_source')
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), '<actual-function>', 'exec'), self.ns)
+
+    def resolve(self, origin):
+        self.calls.append(origin)
+        return self.result
+
+    def run_refresh(self, **kwargs):
+        return self.ns['_refresh_stale_source'](self.job, self.stale, **kwargs)
+
+    def rejected(self):
+        before, resolved = copy.deepcopy(self.job), copy.deepcopy(self.result)
+        with self.assertRaises(RuntimeError):
+            self.run_refresh()
+        self.assertEqual(self.job, before)
+        self.assertEqual(self.result, resolved)
+        self.assertEqual(self.saved, [])
+
+    def test_real_resolver_shape_keeps_identity_and_other_episode(self):
+        before = copy.deepcopy(self.result)
+        fresh = self.run_refresh()
+        self.assertEqual(fresh['url'], self.fresh['url'])
+        self.assertEqual(self.job['catalog']['tmdb_id'], 31)
+        self.assertIn(self.other, self.job['sources'])
+        self.assertEqual(self.result, before)
+        self.assertEqual(self.calls, [self.job['page_url']])
+        self.assertEqual(len(self.saved), 1)
+
+    def test_voice_does_not_silently_fall_back(self):
+        self.fresh['group'] = 'Інше озвучення'
+        self.rejected()
+
+    def test_wrong_season_is_not_stamped_over(self):
+        self.fresh.update(season='3', url='https://cdn.example/S03E03/new.m3u8')
+        self.rejected()
+
+    def test_explicit_season_conflict_with_correct_url_is_rejected(self):
+        self.fresh['season'] = '3'
+        self.rejected()
+
+    def test_wrong_episode(self):
+        self.fresh.update(episode='4', url='https://cdn.example/S02E04/new.m3u8')
+        self.rejected()
+
+    def test_explicit_episode_conflict_with_url(self):
+        self.fresh['episode'] = '4'
+        self.rejected()
+
+    def test_numeric_ukrainian_and_english_labels_match(self):
+        for label in ['3', 'Серія 3', 'Episode 3']:
+            with self.subTest(label=label):
+                self.fresh['episode'] = label
+                self.assertEqual(self.run_refresh()['group'], 'Українська')
+
+    def test_missing_season_uses_owned_job_and_origin(self):
+        self.fresh.pop('season')
+        self.fresh['url'] = 'https://cdn.example/episode3/new.m3u8'
+        self.assertEqual(self.run_refresh()['season'], '2')
+
+    def test_movie_without_season_episode_still_refreshes(self):
+        self.job['catalog']['media_type'] = 'movie'
+        for source in [self.stale, self.fresh]:
+            source.pop('season')
+            source.pop('episode')
+            source['url'] = 'https://cdn.example/movie.m3u8'
+        self.assertEqual(self.run_refresh()['url'], self.fresh['url'])
+
+    def test_catalog_conflict(self):
+        self.result['catalog'] = {'tmdb_id': 99}
+        self.rejected()
+
+    def test_same_title_cannot_override_explicit_identity_conflict(self):
+        self.result.update(title='Same exact title', media_uid='foreign')
+        self.job['catalog']['media_uid'] = 'owned'
+        self.rejected()
+
+    def test_declared_different_origin_is_rejected(self):
+        self.fresh['discovery_page_url'] = 'https://source.example/another.html'
+        self.rejected()
+
+    def test_trailer_drm_and_live_rejected_without_writes(self):
+        for key in ['trailer', 'is_trailer', 'has_drm', 'drm', 'live']:
+            with self.subTest(key=key):
+                self.fresh[key] = True
+                self.rejected()
+                self.fresh.pop(key)
+
+    def test_recovery_preparation_does_not_persist(self):
+        self.run_refresh(persist=False)
+        self.assertEqual(self.saved, [])
+
+    def test_other_source_id_collision_is_rekeyed(self):
+        self.fresh['source_id'] = 'other'
+        fresh = self.run_refresh()
+        self.assertNotEqual(fresh['source_id'], 'other')
+        self.assertEqual(len({s['source_id'] for s in self.job['sources']}), 2)
+
+    def test_resolver_failure_leaves_state_untouched(self):
+        def fail(_):
+            raise TimeoutError('transient')
+        self.ns['resolve_page'] = fail
+        before = copy.deepcopy(self.job)
+        with self.assertRaises(TimeoutError):
+            self.run_refresh()
+        self.assertEqual(before, self.job)
+        self.assertFalse(self.saved)
+
+
+if __name__ == '__main__':
+    unittest.main()

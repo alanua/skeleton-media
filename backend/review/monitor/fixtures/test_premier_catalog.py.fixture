@@ -1,0 +1,346 @@
+"""Synthetic reference arrays and temp SQLite only. Transport always stubbed."""
+import ast
+import hashlib
+import io
+import time
+import types
+import uuid
+from unittest.mock import Mock
+import copy
+import datetime as dt
+import json
+from pathlib import Path
+import sqlite3
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import premier_catalog as pc
+import test_release_monitor as monitor_tests
+
+
+def fixture(*, clickable=True, start=None, end=None, available=None, trailer=False, future_episode=False):
+    slots = []
+    def put(value):
+        index = len(slots); slots.append(None)
+        if isinstance(value, dict):
+            slots[index] = {k:put(v) for k,v in value.items()}
+        elif isinstance(value, list):
+            slots[index] = [put(v) for v in value]
+        else:
+            slots[index] = value
+        return index
+    ep = {'type':{'id':6},'id':'abcd1234','season':1,'episode':2,'duration':1200,
+          'isClickable':clickable,'startDate':start,'endDate':end,'availableTo':available}
+    episodes=[ep]
+    if future_episode:
+        episodes.append({**ep,'id':'abcde123','episode':3,'startDate':'2999-01-01T00:00:00Z'})
+    put({'id':247905,'slug':'reportazh-2035','type':{'id':2,'nameEn':'Series'},'seasons':[{'id':1}],
+         'videoEpisodes':{'pagination':{'page':1,'limit':20,'pages':1,'items':len(episodes)},'result':episodes},
+         'lastUpdatedTs':'2099-01-01'})
+    put({**ep,'type':{'id':7},'id':'ffff','episode':99})  # unrelated global trailer
+    if trailer:
+        typ = slots[slots[slots[slots[slots[0]['videoEpisodes']]['result']][0]]['type']]
+        slots[typ['id']] = 7
+    return slots
+
+
+def html(slots):
+    return ('<html><link rel="canonical" href="'+pc.URL+'"><script id="__NUXT_DATA__" type="application/json">'+
+            json.dumps(slots)+'</script><script>throw Error("never execute")</script></html>').encode()
+
+
+def result_obj(slots):
+    return slots[slots[slots[0]['videoEpisodes']]['result']]
+
+
+class ParserTests(unittest.TestCase):
+    def test_bound_reference_listing_dates_unknown(self):
+        listing=pc.parse_catalog(html(fixture()), observed_at=1800000000)
+        self.assertEqual(len(listing['episodes']),1)
+        ep=listing['episodes'][0]
+        self.assertEqual(ep['episode'],2);self.assertTrue(ep['eligible'])
+        self.assertIsNone(ep['air_date']);self.assertIsNone(ep['release_date'])
+        self.assertEqual(ep['catalog_state'],'CATALOG_LISTED')
+        self.assertEqual(listing['observed_at'],1800000000)
+
+    def test_wrong_urls_and_redirects(self):
+        for url in [pc.URL+'/',pc.URL+'?x=1',pc.URL.replace('https:','http:'),
+                    pc.URL.replace('premier.one','premier.one:443'),pc.URL.replace('premier.one','x@premier.one'),
+                    pc.URL.replace('premier.one','evil.example'),pc.URL+'#x']:
+            with self.subTest(url=url),self.assertRaises(ValueError):pc.current_catalog(url,fetch=lambda *a:self.fail())
+            with self.subTest(redirect=url),self.assertRaises(ValueError):pc.current_catalog(fetch=lambda *a:(url,html(fixture())))
+        with self.assertRaises(ValueError):pc.parse_catalog(html(fixture()).replace(pc.URL.encode(),b'https://evil.example'))
+
+    def test_transport_injection_limits(self):
+        calls=[]
+        def fetch(*args):calls.append(args);return pc.URL,html(fixture())
+        self.assertEqual(pc.current_catalog(fetch=fetch)['series_id'],247905)
+        self.assertEqual(calls,[(pc.URL,8,pc.MAX_HTML)])
+        with patch.object(pc.time,'monotonic',side_effect=[0,9]),self.assertRaises(TimeoutError):pc.current_catalog(fetch=fetch)
+        with self.assertRaises(ValueError):pc.current_catalog(fetch=lambda *a:(pc.URL,b'x'*(pc.MAX_HTML+1)))
+
+    def test_announced_and_future_and_expired(self):
+        for kw in [{'clickable':False},{'start':'2999-01-01T00:00:00Z'},
+                   {'end':'2000-01-01T00:00:00Z'},{'available':'2000-01-01T00:00:00Z'}]:
+            ep=pc.parse_catalog(html(fixture(**kw)))['episodes'][0]
+            self.assertFalse(ep['eligible']);self.assertEqual(ep['catalog_state'],'ANNOUNCED')
+            self.assertIsNone(ep['release_date'])
+
+    def test_invalid_dates_not_invented(self):
+        for value in ['bad','2026-02-30T00:00:00Z','2026-01-01',42]:
+            with self.subTest(value=value),self.assertRaises(ValueError):pc.parse_catalog(html(fixture(start=value)))
+
+    def test_binding_duplicates_schema_and_trailer(self):
+        mutations=[]
+        a=fixture();a[a[0]['id']]=111;mutations.append(a)
+        a=fixture();a[a[0]['slug']]='other';mutations.append(a)
+        a=fixture();a.append(copy.deepcopy(a[0]));mutations.append(a)
+        a=fixture();result_obj(a).append(result_obj(a)[0]);mutations.append(a)
+        a=fixture();a[a[0]['videoEpisodes']].pop('result');mutations.append(a)
+        mutations.append(fixture(trailer=True))
+        for a in mutations:
+            with self.subTest(a=a[0]),self.assertRaises((ValueError,TypeError)):pc.parse_catalog(html(a))
+        for payload in [b'{}',b'[NaN]',b'[[[[',b'[]']:
+            with self.assertRaises(ValueError):pc.parse_catalog(html(fixture()).split(b'>[')[0]+b'>'+payload+b'</script>')
+
+    def test_reference_bounds_cycles_and_depth(self):
+        for value in [-1,99999,True]:
+            a=fixture();a[0]['id']=value
+            with self.assertRaises(ValueError):pc.parse_catalog(html(a))
+        a=fixture();kind=a[0]['type'];a[kind]['cycle']=kind
+        with self.assertRaises(ValueError):pc.parse_catalog(html(a))
+        a=fixture(); index=a[0]['seasons']
+        for _ in range(40):a.append([index]);index=len(a)-1
+        a[0]['seasons']=index
+        with self.assertRaises(ValueError):pc.parse_catalog(html(a))
+        with self.assertRaises(ValueError):pc.parse_catalog(html([None]*20001))
+
+
+class ProviderFlowTests(unittest.TestCase):
+    setUp = monitor_tests.MonitorFlowTests.setUp
+    def provider(self, uid='provider:premier:tv:reportazh-2035', **kw):
+        with sqlite3.connect(self.db) as con:
+            con.execute('INSERT INTO media_items(media_uid,source_url,provider,media_type,title,tmdb_id,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+                        (uid,pc.URL,'premier','tv','Synthetic provider',0,'{}','2020'))
+        self.pjob={'catalog':{'media_uid':uid,'tmdb_id':0,'media_type':'tv'}}
+        self.uid=uid;self.body=html(fixture(**kw))
+        self.transport=patch.object(pc,'_fetch',side_effect=lambda *a:(pc.URL,self.body));self.transport.start();self.addCleanup(self.transport.stop)
+        return self.pjob
+
+    def test_provider_uid_get_on_off_unknown_date(self):
+        job=self.provider()
+        with sqlite3.connect(self.db) as con:before=con.execute('SELECT * FROM media_items').fetchall()
+        self.assertTrue(self.m.state_for_job(job)['monitor_supported'])
+        self.assertEqual(self.m._get(self.uid),{})
+        state=self.m.set_for_job(job,True);self.assertEqual(state['media_uid'],self.uid)
+        row=self.m._get(self.uid);self.assertEqual(row['pending_release_key'],'S01E02');self.assertIsNone(row['pending_air_date'])
+        self.assertTrue(self.m.schedules()[0]['enabled'])
+        self.m.set_for_job(job,False)
+        self.assertIsNone(self.m.tick(self.uid,'off',lambda *a:self.fail())['notification'])
+        with sqlite3.connect(self.db) as con:self.assertEqual(con.execute('SELECT * FROM media_items').fetchall(),before)
+
+    def test_initial_timeout_retains_opt_in_poll_retains_all_state(self):
+        job=self.provider()
+        with patch.object(pc,'current_catalog',side_effect=TimeoutError):
+            result=self.m.set_for_job(job,True)
+            self.assertEqual(result['status'],'RETRY');self.assertTrue(result['enabled'])
+            before=self.m._get(self.uid)
+            self.assertEqual(self.m.tick(self.uid,'timeout',lambda *a:self.fail())['status'],'RETRY')
+            self.assertEqual(self.m._get(self.uid),before)
+        self.assertTrue(self.m.state_for_job(job)['monitor_supported'])
+
+    def test_future_announced_missing_never_probe(self):
+        job=self.provider();self.m.set_for_job(job,True)
+        for kw in [{'start':'2999-01-01T00:00:00Z'},{'clickable':False}]:
+            self.body=html(fixture(**kw))
+            self.assertIsNone(self.m.tick(self.uid,'announced',lambda *a:self.fail())['notification'])
+        a=fixture();result_obj(a).clear();pag=a[a[a[0]['videoEpisodes']]['pagination']];a[pag['items']]=0
+        self.body=html(a)
+        self.assertIsNone(self.m.tick(self.uid,'missing',lambda *a:self.fail())['notification'])
+
+    def test_matching_real_source_once_no_history_mutation(self):
+        job=self.provider();self.m.set_for_job(job,True)
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);jobs=Path(tmp.name)
+        f=monitor_tests.app_functions('_monitor_matches','_monitor_scan_jobs','_monitor_uk_source','_monitor_localization_probe',
+                        JOBS=jobs,media_discovery=self.m.media_discovery,
+                        _monitor_group=lambda *a:None,media_release_monitor=self.m)
+        path=jobs/'synthetic.json'
+        source={'season':1,'episode':2,'group':'українською'}
+        def write(uid=self.uid,**changes):
+            path.write_text(json.dumps({'catalog':{'media_uid':uid,'media_type':'tv','tmdb_id':0},'sources':[{**source,**changes}]}))
+        for changes in [{},{'url':''},{'url':'file:///bad'},{'url':'https://synthetic.invalid/full','trailer':True},
+                        {'url':'https://synthetic.invalid/full','episode':3}]:
+            write(**changes)
+            self.assertIsNone(self.m.tick(self.uid,'absent',f._monitor_localization_probe)['notification'])
+        write(uid='other',url='https://synthetic.invalid/full')
+        self.assertIsNone(self.m.tick(self.uid,'wrong',f._monitor_localization_probe)['notification'])
+        write(url='https://synthetic.invalid/full');before=path.read_bytes()
+        self.assertIsNotNone(self.m.tick(self.uid,'once',f._monitor_localization_probe)['notification'])
+        self.assertIsNone(self.m.tick(self.uid,'twice',f._monitor_localization_probe)['notification'])
+        self.m.ack(self.uid,'S01E02','once',123)
+        self.assertIsNone(self.m.tick(self.uid,'acked',f._monitor_localization_probe)['notification'])
+        self.assertEqual(path.read_bytes(),before)
+
+    def probe_harness(self, discover=None):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+        self.saved=[]
+        self.m.media_discovery.discover=discover or Mock(return_value={'catalog':{'media_uid':self.uid,'media_type':'tv'},'sources':[]})
+        self.m.media_discovery.metadata=Mock(side_effect=AssertionError('unsupported provider metadata'))
+        return monitor_tests.app_functions('_monitor_matches','_monitor_scan_jobs','_monitor_uk_source','_monitor_localization_probe',
+            JOBS=Path(tmp.name),media_discovery=self.m.media_discovery,media_release_monitor=self.m,
+            _monitor_group=lambda *a:None,hashlib=hashlib,time=time,uuid=uuid,
+            resolve_page=Mock(side_effect=AssertionError('unexpected resolver')), _save=self.saved.append)
+
+    def discovery_result(self, **changes):
+        return {'catalog':{'media_uid':self.uid,'media_type':'tv','tmdb_id':0},
+                'sources':[{'season':1,'episode':2,'group':'українською','url':'https://synthetic.invalid/full',**changes}]}
+
+    def test_provider_cached_canonical_episode_contract(self):
+        self.provider(); f=self.probe_harness()
+        path=f.JOBS/'canonical.json'
+        for label, url, accepted in self.canonical_cases():
+            with self.subTest(label=label,url=url):
+                result=self.discovery_result(episode=label,url=url)
+                path.write_text(json.dumps(result))
+                hit=f._monitor_scan_jobs(self.uid,0,1,2,require_url=True)
+                self.assertEqual(bool(hit),accepted)
+        self.assertIsNone(f._monitor_scan_jobs(self.uid,0,1,0,require_url=True))
+
+    @staticmethod
+    def canonical_cases():
+        url='https://synthetic.invalid/full'
+        return [(label,url,True) for label in [2,'2','Серія 2','серия 2','Episode 2','episode 2']]+[
+            ('Серія 3',url,False),('Серія 2','https://synthetic.invalid/s01e03/full',False),
+            ('Серія 2','https://synthetic.invalid/s02e02/full',False),
+            (None,url,False),('',url,False),('1-2',url,False),('Episode 2-3',url,False),
+            (0,url,False)]
+
+    def test_provider_discovered_canonical_episode_contract(self):
+        self.provider()
+        row={'media_uid':self.uid,'tmdb_id':0,'enabled':1,'explicit_override':'ON',
+             'catalog_url':pc.URL,'media_type':'tv'}
+        for label,url,accepted in self.canonical_cases():
+            with self.subTest(label=label,url=url):
+                f=self.probe_harness(Mock(return_value=self.discovery_result(episode=label,url=url)))
+                hit=f._monitor_localization_probe(row,{'season':1,'episode':2,'release_key':'S01E02'})
+                self.assertEqual(hit['available'],accepted)
+                self.assertEqual(len(self.saved),int(accepted))
+        f=self.probe_harness(Mock(return_value=self.discovery_result(episode=0)))
+        self.assertFalse(f._monitor_localization_probe(row,{'season':1,'episode':0})['available'])
+
+    def test_discovery_success_filters_saved_sources(self):
+        job=self.provider();self.m.set_for_job(job,True)
+        result=self.discovery_result();result['sources'].append({**result['sources'][0],'episode':3})
+        discover=Mock(return_value=result);f=self.probe_harness(discover)
+        out=self.m.tick(self.uid,'discovered',f._monitor_localization_probe)
+        self.assertEqual(out['notification']['episode'],2)
+        self.assertEqual(len(self.saved),1);self.assertEqual(len(self.saved[0]['sources']),1)
+        args=discover.call_args
+        self.assertTrue(args.args[0]['force_search'])
+        self.assertEqual(args.kwargs['identified_meta']['media_uid'],self.uid)
+        self.assertEqual(args.kwargs['identified_meta']['source_url'],pc.URL)
+        self.m.media_discovery.metadata.assert_not_called()
+
+    def test_discovery_rejects_identity_episode_trailer_url_language(self):
+        job=self.provider();self.m.set_for_job(job,True)
+        cases=[self.discovery_result(**kw) for kw in [
+            {'episode':3},{'season':2},{'episode':None},{'episode':'1-2'}, {'trailer':True},
+            {'url':''},{'url':'file:///bad'},{'url':'https://'}, {'group':'English'}]]
+        for key,value in [('media_uid','OTHER'),('media_type','movie')]:
+            result=self.discovery_result();result['catalog'][key]=value;cases.append(result)
+        result=self.discovery_result();result['trailer_only']=True;cases.append(result)
+        for result in cases:
+            with self.subTest(result=result):
+                f=self.probe_harness(Mock(return_value=result))
+                self.assertIsNone(self.m.tick(self.uid,'rejected',f._monitor_localization_probe)['notification'])
+                self.assertEqual(self.saved,[])
+
+    def test_discovery_transport_failure_retains_state(self):
+        job=self.provider();self.m.set_for_job(job,True);before=self.m._get(self.uid)
+        for discover in [Mock(side_effect=TimeoutError('synthetic')),Mock(return_value={
+                'catalog':{'media_uid':self.uid,'media_type':'tv'},'status':'no_verified_sources',
+                'discovery':{'errors':['TimeoutError']},'sources':[]})]:
+            f=self.probe_harness(discover)
+            self.assertEqual(self.m.tick(self.uid,'failed',f._monitor_localization_probe)['status'],'RETRY')
+            self.assertEqual(self.m._get(self.uid),before);self.assertEqual(self.saved,[])
+
+    def test_discovery_disabled_announced_no_calls(self):
+        job=self.provider();self.m.set_for_job(job,True);discover=Mock(side_effect=AssertionError('no discovery'))
+        f=self.probe_harness(discover)
+        self.body=html(fixture(clickable=False))
+        self.m.tick(self.uid,'announced',f._monitor_localization_probe)
+        self.m.set_for_job(job,False)
+        self.m.tick(self.uid,'disabled',f._monitor_localization_probe)
+        f._monitor_localization_probe(self.m._get(self.uid),{'season':1,'episode':2})
+        discover.assert_not_called();self.m.media_discovery.metadata.assert_not_called()
+
+    def test_eligible_e2_not_masked_by_future_e3(self):
+        job=self.provider(future_episode=True);self.m.set_for_job(job,True)
+        discover=Mock(return_value=self.discovery_result(episode=3));f=self.probe_harness(discover)
+        self.assertIsNone(self.m.tick(self.uid,'wrong-e3',f._monitor_localization_probe)['notification'])
+        self.assertEqual(self.m._get(self.uid)['pending_release_key'],'S01E02')
+        discover.return_value=self.discovery_result()
+        out=self.m.tick(self.uid,'matching-e2',f._monitor_localization_probe)
+        self.assertEqual(out['notification']['release_key'],'S01E02')
+        self.assertEqual(self.saved[0]['sources'][0]['episode'],2)
+        listing=pc.parse_catalog(self.body)
+        self.assertEqual([e['eligible'] for e in listing['episodes']],[True,False])
+        self.assertTrue(all(e['air_date'] is None and e['release_date'] is None for e in listing['episodes']))
+
+    def test_real_discover_preserves_arbitrary_existing_uid_and_fk(self):
+        job=self.provider(uid='SYNTHETIC-LEGACY-UID');self.m.set_for_job(job,True)
+        schema=json.loads((monitor_tests.ROOT.parent/'context/schema.json').read_text())
+        with sqlite3.connect(self.db) as con:
+            con.execute(schema['discoveries'])
+            con.execute("UPDATE media_items SET poster='existing-poster',release_year=2035 WHERE media_uid=?",(self.uid,))
+        def db():
+            con=sqlite3.connect(self.db);con.row_factory=sqlite3.Row
+            con.execute('PRAGMA foreign_keys=ON');return con
+        candidate={'title':'Synthetic provider season 1','site':'synthetic.invalid','page_url':'https://synthetic.invalid/season-1'}
+        scope=dict(Any=object,Callable=object,json=json,now=lambda:'2026-11-17',_db=db,
+            _persist_aliases=lambda *a:None,candidates=lambda *a,**k:[candidate],
+            _candidate_season=lambda c:'1',_select=lambda *a:(0,'rules'),
+            _same_work_candidate=lambda *a:True,_candidate_content_compatible=lambda *a:True,
+            _reuse_cached_job=lambda *a:None,_source_candidate_for_identity=lambda *a:{},
+            _decorate_source_types=lambda *a:None,is_trailer_source=lambda s:s.get('trailer',False),
+            metadata=Mock(side_effect=AssertionError('must use canonical row')))
+        names={'discover','_persist','_resolve_candidate','_decorate_discovered_result'}
+        tree=ast.parse((monitor_tests.ROOT/'backend/media_discovery.py').read_text())
+        nodes=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names]
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[ast.ImportFrom(module='__future__',names=[ast.alias(name='annotations')],level=0),*nodes],type_ignores=[])),'media_discovery.py','exec'),scope)
+        f=self.probe_harness(scope['discover'])
+        resolver=Mock(return_value={'sources':self.discovery_result()['sources']})
+        # Functions retain their shared globals, so bind the fake resolver there.
+        f._monitor_localization_probe.__globals__['resolve_page']=resolver
+        out=self.m.tick(self.uid,'real-existing-discovery',f._monitor_localization_probe)
+        self.assertIsNotNone(out['notification']);resolver.assert_called_once_with(candidate['page_url'])
+        self.assertEqual(self.saved[0]['catalog']['media_uid'],'SYNTHETIC-LEGACY-UID')
+        with db() as con:
+            rows=con.execute('SELECT media_uid,tmdb_id,source_url,poster FROM media_items').fetchall()
+            self.assertEqual([tuple(r) for r in rows],[(self.uid,0,pc.URL,'existing-poster')])
+            self.assertEqual(con.execute('SELECT count(*) FROM discoveries WHERE media_uid=?',(self.uid,)).fetchone()[0],1)
+            self.assertEqual(con.execute('PRAGMA foreign_key_check').fetchall(),[])
+        self.assertEqual(self.m._get(self.uid)['media_uid'],self.uid)
+
+
+class TransportTests(unittest.TestCase):
+    def test_incomplete_content_length_even_after_complete_nuxt(self):
+        body=html(fixture())
+        class Socket:
+            def __init__(self,wire):self.stream=io.BytesIO(wire)
+            def settimeout(self,timeout):pass
+            def recv_into(self,buf):return self.stream.readinto(buf)
+        class Connection:
+            def __init__(self,host,timeout):self.sock=Socket(self.wire)
+            def request(connection,*a,**k):
+                self.assertEqual(k['headers'], {'Accept':'text/html', 'Accept-Encoding':'identity', 'User-Agent':'Skeleton-Home-Metadata/1'})
+            def getresponse(self):
+                response=self.response_class(self.sock);response.begin();return response
+            def close(self):pass
+        for missing in [0,100]:
+            Connection.wire=b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body)+missing).encode()+b'\r\n\r\n'+body
+            with self.subTest(missing=missing),patch.object(pc.http.client,'HTTPSConnection',Connection):
+                if missing:
+                    with self.assertRaises(pc.http.client.IncompleteRead):pc.current_catalog()
+                else:self.assertEqual(pc.current_catalog()['episodes'][0]['episode'],2)

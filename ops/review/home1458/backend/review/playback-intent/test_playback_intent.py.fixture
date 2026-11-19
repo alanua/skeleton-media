@@ -1,0 +1,178 @@
+import concurrent.futures
+import sys
+import threading
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'backend'))
+from playback_intent import PlaybackIntent, PlaybackIntentChanged
+
+
+class PlaybackIntentTests(unittest.TestCase):
+    def setUp(self):
+        self.f = PlaybackIntent()
+
+    def test_reads_preserve_revision_and_return_value(self):
+        for verb in ['get_property', 'get_property_string']:
+            self.assertEqual(self.f.execute([verb, 'pause'], lambda: {'data': False}), {'data': False})
+        self.assertEqual(self.f.read(), 0)
+
+    def test_user_pause_seek_stop_load_and_unknown_invalidate(self):
+        for command in [['set_property', 'pause', True], ['seek', 3], ['stop'],
+                        ['loadfile', 'fixture'], ['cycle', 'pause'], ['unknown'], []]:
+            before = self.f.read()
+            self.f.execute(command, lambda: {'error': 'success'})
+            self.assertEqual(self.f.read(), before+1)
+
+    def test_failed_operator_command_still_invalidates_old_work(self):
+        def fail():
+            raise TimeoutError()
+        with self.assertRaises(TimeoutError):
+            self.f.execute(['seek', 3], fail)
+        self.assertEqual(self.f.read(), 1)
+        with self.assertRaises(PlaybackIntentChanged):
+            self.f.execute(['loadfile', 'fixture'], lambda: self.fail(), expected_revision=0)
+
+    def test_inflight_mutation_has_no_usable_snapshot(self):
+        self.f.execute(['seek', 3], lambda: self.assertIsNone(self.f.read()))
+        self.assertEqual(self.f.read(), 1)
+
+    def test_recovery_preserves_revision_on_success(self):
+        out = self.f.execute(['loadfile', 'fixture'], lambda: 7, expected_revision=0)
+        self.assertEqual(out, 7)
+        self.assertEqual(self.f.read(), 0)
+
+    def test_recovery_failure_releases_both_locks(self):
+        def fail():
+            raise OSError()
+        with self.assertRaises(OSError):
+            self.f.execute(['loadfile', 'fixture'], fail, expected_revision=0)
+        self.assertEqual(self.f.read(), 0)
+        self.assertEqual(self.f.execute(['seek', 3], lambda: 8), 8)
+
+    def test_stale_recovery_never_transmits(self):
+        self.f.execute(['cycle', 'pause'], lambda: None)
+        with self.assertRaises(PlaybackIntentChanged):
+            self.f.execute(['loadfile', 'fixture'], lambda: self.fail(), expected_revision=0)
+
+    def test_invalid_expected_revisions_are_rejected(self):
+        for value in [True, False, -1, '0', 0.0, object()]:
+            with self.subTest(value=type(value).__name__), self.assertRaises(ValueError):
+                self.f.execute(['loadfile', 'fixture'], lambda: self.fail(), expected_revision=value)
+
+    def test_expected_revision_on_read_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.f.execute(['get_property', 'pause'], lambda: self.fail(), expected_revision=0)
+
+    def test_malformed_get_is_not_trusted_as_read(self):
+        for parts in [['get_property'], ['get_property', ''], ['get_property', 'pause', 'extra']]:
+            before = self.f.read()
+            self.f.execute(parts, lambda: None)
+            self.assertEqual(self.f.read(), before+1)
+
+    def test_reads_do_not_wait_behind_blocked_mutation(self):
+        entered, release = threading.Event(), threading.Event()
+        def mutation():
+            entered.set()
+            self.assertTrue(release.wait(2))
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            future = pool.submit(self.f.execute, ['seek', 3], mutation)
+            self.assertTrue(entered.wait(2))
+            try:
+                self.assertEqual(self.f.execute(['get_property', 'pause'], lambda: 4), 4)
+                self.assertIsNone(self.f.read())
+            finally:
+                release.set()
+            future.result(timeout=2)
+
+    def test_recovery_does_not_wait_or_transmit_while_wire_is_busy(self):
+        entered, release = threading.Event(), threading.Event()
+        def mutation():
+            entered.set()
+            self.assertTrue(release.wait(2))
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            future = pool.submit(self.f.execute, ['seek', 3], mutation)
+            self.assertTrue(entered.wait(2))
+            try:
+                with self.assertRaises(PlaybackIntentChanged):
+                    self.f.execute(['loadfile', 'fixture'], lambda: self.fail(), expected_revision=1)
+            finally:
+                release.set()
+            future.result(timeout=2)
+
+    def test_user_pause_during_recovery_cancels_next_recovery_step(self):
+        entered, release, user_marked = threading.Event(), threading.Event(), threading.Event()
+        real_wire = self.f._wire
+        class ObservedWire:
+            def acquire(_, **kwargs):
+                return real_wire.acquire(**kwargs)
+            def release(_):
+                return real_wire.release()
+            def __enter__(_):
+                user_marked.set()  # User intent was registered before this wait.
+                real_wire.acquire()
+            def __exit__(_, *args):
+                real_wire.release()
+        self.f._wire = ObservedWire()
+        events = []
+        def loading():
+            events.append('load')
+            entered.set()
+            self.assertTrue(release.wait(2))
+        def user_pause():
+            return self.f.execute(['set_property', 'pause', True], lambda: events.append('user_pause'))
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            recovery = pool.submit(self.f.execute, ['loadfile', 'fixture'], loading, expected_revision=0)
+            self.assertTrue(entered.wait(2))
+            user = pool.submit(user_pause)
+            self.assertTrue(user_marked.wait(2))
+            self.assertIsNone(self.f.read())
+            release.set()
+            recovery.result(timeout=2)
+            user.result(timeout=2)
+        self.assertEqual(events, ['load', 'user_pause'])
+        with self.assertRaises(PlaybackIntentChanged):
+            self.f.execute(['set_property', 'pause', False], lambda: self.fail(), expected_revision=0)
+
+    def test_parallel_operator_intents_are_not_lost(self):
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            values = list(pool.map(lambda n: self.f.execute(['seek', n], lambda: n), range(100)))
+        self.assertEqual(sorted(values), list(range(100)))
+        self.assertEqual(self.f.read(), 100)
+
+    def test_whole_operation_invalidates_before_any_probe(self):
+        @self.f.operation
+        def control(value, *, option=None):
+            self.assertIsNone(self.f.read())
+            return value, option
+        self.assertEqual(control(7, option=9), (7, 9))
+        self.assertEqual(self.f.read(), 1)
+        self.assertEqual(control.__name__, 'control')
+
+    def test_failed_whole_operation_releases_pending_state(self):
+        @self.f.operation
+        def stop():
+            self.assertIsNone(self.f.read())
+            raise TimeoutError()
+        with self.assertRaises(TimeoutError):
+            stop()
+        self.assertEqual(self.f.read(), 1)
+
+    def test_operation_with_nested_mutation_never_exposes_intermediate_token(self):
+        @self.f.operation
+        def control():
+            self.f.execute(['set_property', 'pause', True], lambda: None)
+            self.assertIsNone(self.f.read())
+        control()
+        self.assertEqual(self.f.read(), 2)
+
+    def test_recovery_is_refused_inside_pending_operator_probe(self):
+        @self.f.operation
+        def control():
+            with self.assertRaises(PlaybackIntentChanged):
+                self.f.execute(['loadfile', 'fixture'], lambda: self.fail(), expected_revision=1)
+        control()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,51 @@
+"""Legacy server jobs resolve only an already registered exact provider identity."""
+import copy
+import sqlite3
+import unittest
+import test_premier_catalog as fixtures
+
+class LegacyIdentityTests(unittest.TestCase):
+    def harness(self):
+        h=fixtures.ProviderFlowTests()
+        h.setUp()
+        self.addCleanup(h.doCleanups)
+        job=h.provider(uid='SYNTHETIC-EXISTING-UID')
+        job['catalog'].pop('media_uid')
+        job['catalog_url']=fixtures.pc.URL
+        return h,job
+
+    def test_get_resolves_registered_url_without_writing_or_changing_job(self):
+        h,job=self.harness()
+        before=copy.deepcopy(job)
+        with sqlite3.connect(h.db) as con:
+            rows=con.execute('SELECT * FROM media_items').fetchall()
+        state=h.m.state_for_job(job)
+        self.assertEqual(state['media_uid'],'SYNTHETIC-EXISTING-UID')
+        self.assertTrue(state['monitor_supported'])
+        self.assertFalse(state['enabled'])
+        self.assertEqual(job,before)
+        self.assertEqual(h.m._get('SYNTHETIC-EXISTING-UID'),{})
+        with sqlite3.connect(h.db) as con:
+            self.assertEqual(con.execute('SELECT * FROM media_items').fetchall(),rows)
+
+    def test_explicit_on_off_preserves_existing_registered_uid(self):
+        h,job=self.harness()
+        self.assertTrue(h.m.set_for_job(job,True)['enabled'])
+        self.assertEqual(h.m._get('SYNTHETIC-EXISTING-UID')['media_uid'],'SYNTHETIC-EXISTING-UID')
+        self.assertFalse(h.m.set_for_job(job,False)['enabled'])
+        with sqlite3.connect(h.db) as con:
+            self.assertEqual(con.execute('SELECT count(*) FROM media_items').fetchone()[0],1)
+            self.assertEqual(con.execute('PRAGMA foreign_key_check').fetchall(),[])
+
+    def test_wrong_declared_uid_or_noncanonical_url_is_not_remapped(self):
+        h,job=self.harness()
+        for altered in [
+            {**job,'catalog':{**job['catalog'],'media_uid':'SYNTHETIC-OTHER'}},
+            {**job,'catalog_url':fixtures.pc.URL+'?spoof=1'},
+            {**job,'catalog_url':fixtures.pc.URL+'/other'},
+        ]:
+            with self.assertRaises(h.m.MonitorUnsupported):
+                h.m.state_for_job(altered)
+
+if __name__=='__main__':
+    unittest.main()

@@ -1,0 +1,49 @@
+import unittest
+from youtube_playback_health import youtube_progress_health as health
+from youtube_playback_health import canonical_media_mode
+
+
+class HealthTests(unittest.TestCase):
+    def test_canonical_status_output_and_mutation_output(self):
+        self.assertEqual(canonical_media_mode('MODE=kiosk\nACTIVE_TTY=tty2\nMPV=running\n'),'kiosk')
+        self.assertEqual(canonical_media_mode('TV_MODE=mpv\n'),'mpv')
+        for value in ['CHROME=running','MODE=unknown','MODE=kiosk\nTV_MODE=mpv\n',None]:
+            self.assertEqual(canonical_media_mode(value),'unknown')
+    def sample(self,**values):
+        return dict({'running':True,'pause':False,'video_id':'synthetic','time-pos':10,
+                     'decoded_frames':100,'ready_state':4,'video_width':1280,
+                     'playback_rate':1,'seeking':False},**values)
+    def test_playing_requires_clock_and_frames(self):
+        self.assertEqual(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':200}),4),{'state':'playing','healthy':True})
+    def test_ready_state_four_frozen_is_not_healthy(self):
+        self.assertEqual(health(self.sample(),self.sample(),4),{'state':'stalled','healthy':False})
+    def test_time_advance_with_frozen_frame_is_not_healthy(self):
+        self.assertEqual(health(self.sample(),self.sample(**{'time-pos':14}),4)['state'],'frame_stalled')
+    def test_pause_is_not_a_failure_to_recover(self):
+        self.assertEqual(health(self.sample(),self.sample(pause=True),4)['state'],'paused')
+    def test_seek_clip_change_counter_reset_are_transitions(self):
+        for change in [{'seeking':True},{'video_id':'new'},{'decoded_frames':2},{'time-pos':1},{'time-pos':200}]:
+            self.assertEqual(health(self.sample(),self.sample(**change),4)['state'],'transition')
+    def test_buffering_is_not_healthy(self):
+        self.assertEqual(health(self.sample(),self.sample(ready_state=2),4)['state'],'buffering')
+    def test_missing_frame_evidence_is_unverified(self):
+        self.assertEqual(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':None}),4)['state'],'unverified')
+    def test_audio_only_can_advance_without_video(self):
+        self.assertTrue(health(self.sample(video_width=0),self.sample(**{'time-pos':14,'video_width':0,'decoded_frames':None,'audio_only':True}),4)['healthy'])
+    def test_missing_video_geometry_cannot_claim_audio_only(self):
+        for width in [None,0]:
+            self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'video_width':width,'decoded_frames':None}),4)['healthy'])
+    def test_stale_or_unknown_pause_is_not_healthy(self):
+        self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':200}),120)['healthy'])
+        self.assertFalse(health(self.sample(),self.sample(**{'time-pos':14,'decoded_frames':200,'pause':None}),4)['healthy'])
+    def test_watchdog_field_names_are_supported(self):
+        a=self.sample();b=self.sample(decoded_frames=200)
+        a['time_pos']=a.pop('time-pos');b['time_pos']=14;b.pop('time-pos')
+        self.assertTrue(health(a,b,4)['healthy'])
+    def test_stopped_or_short_or_invalid_probe_is_not_healthy(self):
+        self.assertEqual(health(self.sample(),self.sample(running=False),4)['state'],'stopped')
+        for elapsed in [0,1,None,float('nan'),True]:self.assertFalse(health(self.sample(),self.sample(),elapsed)['healthy'])
+        self.assertFalse(health(None,self.sample(),4)['healthy'])
+
+
+if __name__=='__main__':unittest.main()

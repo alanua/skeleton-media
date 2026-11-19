@@ -1,0 +1,126 @@
+import ast
+import json
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+from typing import Any
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'backend'))
+from playback_intent import PlaybackIntent, PlaybackIntentChanged
+
+
+class PlayerIntentIntegration(unittest.TestCase):
+    def setUp(self):
+        self.sockets = []
+        self.failure = None
+        self.fence = PlaybackIntent()
+        owner = self
+        class Socket:
+            def __init__(self):
+                self.closed = False
+                self.sent = None
+                self.timeout = None
+            def settimeout(self, value):
+                self.timeout = value
+            def connect(self, value):
+                self.path = value
+            def sendall(self, value):
+                self.sent = value
+            def recv(self, size):
+                if owner.failure:
+                    raise owner.failure
+                return b'{"error":"success","data":false}\n'
+            def close(self):
+                self.closed = True
+        def factory(*args):
+            sock = Socket()
+            self.sockets.append(sock)
+            return sock
+        self.ns = dict(Any=Any, json=json, SOCKET=Path('/fixture/mpv.sock'),
+                       socket=SimpleNamespace(socket=factory, AF_UNIX=1, SOCK_STREAM=1),
+                       _PLAYBACK_INTENT=self.fence)
+        tree = ast.parse((ROOT/'backend/player.py').read_text())
+        wanted = {'command', '_command_wire', 'playback_control_revision', 'control'}
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+        self.assertEqual({n.name for n in nodes}, wanted)
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), '<actual-player-functions>', 'exec'), self.ns)
+
+    def test_actual_wire_read_payload_timeout_and_close_are_preserved(self):
+        self.assertEqual(self.ns['command'](['get_property', 'pause'], timeout=.75),
+                         {'error': 'success', 'data': False})
+        sock = self.sockets[-1]
+        self.assertEqual(json.loads(sock.sent), {'command': ['get_property', 'pause']})
+        self.assertEqual(sock.timeout, .75)
+        self.assertEqual(sock.path, '/fixture/mpv.sock')
+        self.assertTrue(sock.closed)
+        self.assertEqual(self.ns['playback_control_revision'](), 0)
+
+    def test_actual_operator_command_invalidates_revision(self):
+        self.ns['command'](['seek', 10, 'absolute'])
+        self.assertEqual(self.ns['playback_control_revision'](), 1)
+        self.assertTrue(self.sockets[-1].closed)
+
+    def test_actual_fenced_recovery_payload_is_unchanged(self):
+        parts = ['loadfile', 'https://fixture.invalid/master.m3u8', 'replace', -1,
+                 {'start': '100', 'pause': 'yes'}]
+        self.ns['command'](parts, expected_revision=0)
+        self.assertEqual(json.loads(self.sockets[-1].sent), {'command': parts})
+        self.assertEqual(self.ns['playback_control_revision'](), 0)
+
+    def test_actual_stale_revision_cannot_even_create_socket(self):
+        self.ns['command'](['cycle', 'pause'])
+        count = len(self.sockets)
+        with self.assertRaises(PlaybackIntentChanged):
+            self.ns['command'](['loadfile', 'fixture'], expected_revision=0)
+        self.assertEqual(len(self.sockets), count)
+
+    def test_actual_wire_timeout_closes_socket_and_clears_pending(self):
+        self.failure = TimeoutError()
+        with self.assertRaises(TimeoutError):
+            self.ns['command'](['seek', 10])
+        self.assertTrue(self.sockets[-1].closed)
+        self.assertEqual(self.ns['playback_control_revision'](), 1)
+
+    def test_actual_fenced_wire_failure_does_not_poison_guard(self):
+        self.failure = TimeoutError()
+        with self.assertRaises(TimeoutError):
+            self.ns['command'](['loadfile', 'fixture'], expected_revision=0)
+        self.assertEqual(self.ns['playback_control_revision'](), 0)
+        self.failure = None
+        self.ns['command'](['set_property', 'pause', True])
+        self.assertEqual(self.ns['playback_control_revision'](), 1)
+
+    def test_actual_control_invalidates_before_backend_or_status_probe(self):
+        probes = []
+        def backend():
+            self.assertIsNone(self.fence.read())
+            probes.append('backend')
+            return 'mpv', None
+        def status():
+            self.assertIsNone(self.fence.read())
+            probes.append('status')
+            return {}
+        self.ns.update(_active_backend=backend, _player_active=lambda: True,
+                       status=status, _is_live_stream_state=lambda _: False)
+        result = self.ns['control']('pause')
+        self.assertEqual(probes, ['backend', 'status', 'status'])
+        self.assertEqual(json.loads(self.sockets[-1].sent),
+                         {'command': ['set_property', 'pause', True]})
+        self.assertEqual(self.fence.read(), 2)
+        self.assertEqual(result['result']['error'], 'success')
+
+    def test_actual_failed_control_probe_releases_pending_state(self):
+        def backend():
+            self.assertIsNone(self.fence.read())
+            raise TimeoutError()
+        self.ns['_active_backend'] = backend
+        with self.assertRaises(TimeoutError):
+            self.ns['control']('pause')
+        self.assertEqual(self.fence.read(), 1)
+        self.assertFalse(self.sockets)
+
+
+if __name__ == '__main__':
+    unittest.main()
