@@ -1,26 +1,38 @@
-# R19 transaction core — source review only
+# R19 bounded HLS recovery — integrated source review
 
-This completes a bounded transaction core, not the runtime adapter or automatic recovery activation. No network, threads, timers, or runtime startup are created by importing it.
+When an owned VOD MPV session remains paused for cache across two observations, the existing progress monitor can resolve the saved origin, load the exact work/season/episode/voice at the retained position while paused, restore semantic audio/subtitle selections, then resume only under the unchanged user intent. Success requires both video-clock progress and independently observed decoded-image changes before publishing the new source/current/last-VOD state.
 
-The transaction admits two cache-starvation samples, prepares a detached exact-origin resolver job outside the mutation guard, stages load paused, validates preserved identity/position/track state before resuming, and requires both time and decoded-frame progress before a revision-conditional commit. Every mutation uses the reviewed expected_revision fence. Resolve failures consume the two-attempt session budget with a 60-second cooldown; admission is bounded to 128 sessions. Untrusted resolver MPV options are ignored; a reviewed adapter can supply only transport headers/referrer/user-agent.
+This patch has not been activated in production. Production TV/provider/Redmi/Pixel acceptance remains unverified. Do not deploy the rejected admission-only prototype or reconstruct the runtime from old public main.
 
-Validation on 2026-11-18: 23 transaction tests, 102 retained backend tests, and 26 intent-fence tests pass in sequential bounded runs. These are synthetic source tests; no real HLS or phone acceptance is claimed.
+## Runtime integration
 
-Integration still required: authoritative fresh snapshot mapping; receiver session and mode lock; actual resolver timeout enforcement and transport mapping; revision-conditional persistence and source-id transition; existing watchdog invocation with no second executor. Process-local retry state requires review of restart behavior. Do not copy the rejected DE-PC admission prototype or replace runtime from old public main. Current runtime and APK are unchanged; full release gate remains blocked.
+- `mpv_recovery_runtime.py` supplies actual app/player adapters. It uses the existing tv-mode flock, rejects pending mode requests, binds MPV to boot ID/PID/start ticks/owner/executable, normalizes canonical episode labels, and fences both app and player job copies.
+- `patch_runtime_wiring.py` installs one callback in the EXISTING progress monitor. It creates no worker, timer or daemon. Normal progress persistence still runs if recovery fails. Mode entry invalidates recovery before its first probe.
+- Apply the existing playback-intent patch to the reviewed player and the optional resolver-injection patch to the reviewed app first. Wiring refuses any input except app SHA256 `2d6c9a00d057cb2e1bfaa7012735b7231697f8e0a5d2562c5fbb93129a7698fc` and intent-fenced player `c6197c05b3ebfcc5fc6b91efe7dc3326d9d7ab8804ed2a177bd36d1b40c82236`.
+- Wired isolated app SHA256: `529cf5fea68699f4db4fec166d4a6a8185a82609df4039918bc3a88df3b76ffe`. Wired isolated player: `50752d8500a59ed40033b61c72c856e5aaa519e1251c0de76c1d25c1f0557099`.
+- Snapshot, resolver worker, transaction, postload adapter, commit adapter, image collector, budget module and reviewed playback-intent module must be installed together. A missing commit gate is refused.
+- The bounded resolver imports the existing sibling resolver, never the app or authentication files. Normal retries retain their default resolver and behavior.
 
-## Current selector and bounded resolver integration — 2026-11-18
+## Safety and durability
 
-The transaction now accepts the actual app's authoritative `job_id` (the old fixture's `id` is only a fallback). Four new integration cases reproduce the previous all-ineligible failure and then pass with the real current selector: successful load/verify/commit, unrelated catalog ID, wrong voice, and an operator pause during preparation.
+Two attempts per stable playback session, at least 60 seconds apart, persist in private SQLite across engine reconstruction. Resolver failure consumes a reservation; SQLite errors do not fall back to memory. At 128 admitted sessions the budget fails closed without evicting prior sessions; any future cleanup requires proof those sessions are no longer active. Own source publication does not create a new session budget.
 
-`patch_refresh_resolver.py` changes only the current `_refresh_stale_source` signature and its resolver call. Without injection, normal retries are unchanged. With injection, `prepare_recovery_source` uses the same exact-origin/season/episode/voice selector with `persist=False`, backed by a resolver subprocess with a maximum 12-second deadline. It kills the owned process group on timeout, suppresses raw resolver error output, and imports only the sibling resolver, never the application/watchers. No account, API-key fallback, daemon, or second coding executor is involved.
+Resolve is bounded to 12 seconds, initial load readiness to 8 seconds, and adapter commands/observations to a 45-second total deadline. Missing asynchronous MPV properties are pending only during the owned initial load window; they never become synthetic ready state. Mode, process, record, selection, seek and revision changes cancel further recovery actions.
 
-Fresh validation: 11 bounded-resolver tests + 4 selector/transaction tests + 23 retained transaction tests pass together (38); all 102 backend tests pass on the patched isolated app. A real synthetic sleeping child and its descendant are killed in the timeout test; this does not claim real HLS acceptance. Initial test-fixture quoting, missing baseline/schema fixtures and a /proc reaper race were corrected and retained privately as failed attempts.
+MPV numeric track IDs can change. Restoration requires one exact audio/subtitle descriptor; it excludes asynchronously completed video decoder metadata while retaining every selectable track ID/descriptor/selected flag. MPV's disabled-track boolean is normalized to `no`. Ambiguous or unavailable selections are not guessed.
 
-Reproduction requires the existing private current-source layout, never old public main:
+Publication runs under the user intent gate and mode lock. It adds a source while retaining old rows, then updates current and last-VOD through private atomic writers with readback. It preserves session start/PID/content identity/poster/family metadata and does not call cold play, source-job cleanup or selection-changing UI helpers. Partial publication keeps a valid old source pointer; no rollback overwrites newer user intent.
 
-1. Copy the reviewed current app (SHA256 `70af15e405e506d6bc4de3d92e545850fdf034aa31cc059bf5885de376106a38`) to `app.before.py` and `work/backend/app.py`.
-2. Retain the existing monitor work/tests plus sibling `baseline/backend` and `context/schema.json`. Retain source-refresh review's `test_source_refresh_preservation.py.fixture` as `work/tests/test_source_refresh_preservation.py` and `refresh_helper_snapshot.json` beside it. These are already reviewed elsewhere in this PR.
-3. Apply `python3 patch_refresh_resolver.py work/backend/app.py`.
-4. With `PYTHONPATH=.:work/tests:work/backend`, run `python3 -m unittest test_selector_transaction test_hls_recovery_transaction test_bounded_hls_resolver -v`. Run the retained backend suite from `work` with its backend on PYTHONPATH.
+Decoded-image evidence uses MPV screenshot-to-file with video-only pixels, excluding OSD/subtitles and PNG metadata. Counts mean observed image changes, never total decoded frames or time multiplied by FPS. Private temporary images are deleted. The allowlisted screenshot observation uses the existing raw IPC transport so it cannot increment the user-control revision.
 
-Full automatic recovery is still disabled. Snapshot/selected-track remapping, source-ID transition, revision-conditional durable commit, independent real MPV progress evidence and existing watchdog invocation remain integration requirements. Neither the optional injection nor the transaction is deployed. Do not publish a partial APK as the completed package.
+## Validation — 2026-11-19
+
+128 retained/backend/intent tests PASS after app/player wiring. 132 recovery tests PASS, including canonical adapter, actual monitor functions, durable files/budget, load-property waiting, user pause/seek/mode cancellation, semantic remapping and failure publication.
+
+`verify_owned_hls_recovery.py` PASS with real MPV 0.40, generated HLS and an owned loopback HTTP fixture: actual cache starvation, paused load, restoration, independent decoded-image progress and durable commit, with PID/session preserved. It uses no external provider or production display. The earlier real MPV decoded-image contract also passed with a generated local file.
+
+The real fixture exposed asynchronous property availability, disabled-track booleans and video metadata changes that synthetic tests missed. Those failures and the test harness corrections remain in private evidence. This is not physical TV, real provider, phone-cast or Android UI acceptance.
+
+Reproduction uses the existing reviewed private app/player fixtures, baseline/context, retained tests and the playback-intent/source-refresh fixtures elsewhere in this PR. From the recovery review directory, run the explicit `test_*.py` recovery modules with the private `work/tests` on PYTHONPATH; run retained tests from `work` with `work/backend` on PYTHONPATH. The existing intent integration fixtures belong under `work/tests`, not this directory's parent. Run the owned HLS verifier separately under a finite deadline.
+
+Full Home release remains blocked on unverified ledger outcomes, including R03/R22/R23 and phone/TV acceptance. The single signed 1.4.58/code174 APK remains private and uninstalled.
