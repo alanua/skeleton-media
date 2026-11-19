@@ -120,7 +120,11 @@ class MPVRecoverySnapshot:
                 or self.process()!=process or canonical(self.record())!=canonical(current)
                 or canonical(self.job(job_id))!=canonical(job)):
             raise SnapshotUnavailable('session changed during snapshot')
-        session=hashlib.sha256(canonical([process,current]).encode()).hexdigest()
+        # Recovery publication changes source/snapshot/resume fields, not the
+        # playback session. Counting those changes would reset the retry budget.
+        stable={key:current.get(key) for key in
+                ('pid','started_at','job_id','content_key','episode_key','identity_scope')}
+        session=hashlib.sha256(canonical([process,stable]).encode()).hexdigest()
         frames=None
         # The actual collector is deliberately not invented. Clock/fps,
         # estimated-frame-number and drop counters cannot supply this evidence.
