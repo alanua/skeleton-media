@@ -37,6 +37,14 @@ def matches(status,expected):
             and type(status.get('player_state')) is int and status['player_state'] in (1,3))
 
 
+def verified_surface(observed,context,video_digest):
+    return (isinstance(observed,dict) and observed.get('endpoint')=='home_edge_01'
+        and observed.get('receiver_epoch')==context['receiver_epoch']
+        and observed.get('mode')=='kiosk' and observed.get('foreground_chrome') is True
+        and observed.get('mpv_overlay_hidden') is True
+        and matches(observed.get('player'),video_digest))
+
+
 class ReceiverEventLedger:
     """Reserve before actuation. Failed/uncertain handoffs never auto-replay."""
     def __init__(self,path):self.path=Path(path)
@@ -126,18 +134,16 @@ class IncomingYouTubeCoordinator:
             if reservation!='reserved':return {'state':reservation}
             if self.context()!=window_context or not matches(self.status(),selected['video_sha256']):
                 return {'state':'context_changed'}
-            if window_context['mode']!='kiosk':
+            already_visible=(window_context['mode']=='kiosk' and
+                verified_surface(self.verify(),window_context,selected['video_sha256']))
+            if not already_visible:
                 # Adapter must use the registered incoming-preserving controller,
                 # with this expected context and a finite timeout. Never ordinary
                 # switch_mode/play/reload/restore-previous-YouTube paths.
                 sent=True
                 self.handoff(selected['video_sha256'],expected_context=deepcopy(window_context),timeout=40)
             observed=self.verify()
-            if (not isinstance(observed,dict) or observed.get('endpoint')!='home_edge_01'
-                    or observed.get('receiver_epoch')!=window_context['receiver_epoch']
-                    or observed.get('mode')!='kiosk' or observed.get('foreground_chrome') is not True
-                    or observed.get('mpv_overlay_hidden') is not True
-                    or not matches(observed.get('player'),selected['video_sha256'])):
+            if not verified_surface(observed,window_context,selected['video_sha256']):
                 return {'state':'handoff_unverified','sent':sent}
             # Publish YouTube directly. No intermediate Video, endpoint or volume write.
             self.publish({'mode':'kiosk','reason':'fresh_receiver_media_load',
