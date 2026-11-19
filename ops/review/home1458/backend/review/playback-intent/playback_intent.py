@@ -10,7 +10,7 @@ class PlaybackIntentChanged(RuntimeError):
 class PlaybackIntent:
     """User mutations invalidate prepared recovery before waiting for the wire."""
     def __init__(self):
-        self._state = threading.Lock()
+        self._state = threading.RLock()
         self._wire = threading.Lock()
         self._revision = 0
         self._pending = 0
@@ -32,6 +32,24 @@ class PlaybackIntent:
                 with self._state:
                     self._pending -= 1
         return wrapped
+
+    def commit(self, expected_revision, apply):
+        """Publish recovery records before another operator mutation is admitted.
+
+        The callback may read this revision on the same thread. It must not send
+        playback mutations or wait on another thread acquiring this gate.
+        """
+        if type(expected_revision) is not int or expected_revision < 0 or not callable(apply):
+            raise ValueError('Invalid recovery commit')
+        if not self._wire.acquire(blocking=False):
+            raise PlaybackIntentChanged('Playback mutation is busy')
+        try:
+            with self._state:
+                if self._pending or self._revision != expected_revision:
+                    raise PlaybackIntentChanged('Playback intent changed')
+                return apply()
+        finally:
+            self._wire.release()
 
     @staticmethod
     def is_read(parts):
