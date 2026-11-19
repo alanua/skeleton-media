@@ -112,4 +112,17 @@ class PostloadTests(unittest.TestCase):
         f=Fixture()
         with self.assertRaises(SnapshotUnavailable):f.reader().capture()
 
+
+
+
+class TrackGuardTests(unittest.TestCase):
+    def test_unrelated_video_decoder_metadata_does_not_change_track_selection(self):
+        from mpv_recovery_postload import track_selection_guard
+        before=[{'id':1,'type':'video','demux-w':96},
+                {'id':2,'type':'audio','lang':'uk','codec':'aac','selected':True}]
+        after=__import__('copy').deepcopy(before);after[0]['demux-w']=1920
+        self.assertEqual(track_selection_guard(before),track_selection_guard(after))
+        after[1]['lang']='de'
+        self.assertNotEqual(track_selection_guard(before),track_selection_guard(after))
+
 if __name__=='__main__':unittest.main()
