@@ -17,6 +17,17 @@ def track_signature(track):
     return tuple(track.get(key) for key in TRACK_FIELDS)
 
 
+
+def track_selection_guard(tracks):
+    if not isinstance(tracks,list):
+        raise SnapshotUnavailable('track list unavailable')
+    # MPV fills unrelated video dimensions/decoder metadata asynchronously.
+    # Fence every selectable audio/subtitle descriptor and actual selected flag.
+    rows=[{key:t.get(key) for key in TRACK_FIELDS+('id','selected')}
+          for t in tracks if isinstance(t,dict) and t.get('type') in ('audio','sub')]
+    return canonical(sorted(rows,key=canonical))
+
+
 def remap_track(identity, tracks):
     if not isinstance(identity, dict) or identity.get('type') not in ('audio', 'sub'):
         raise SnapshotUnavailable('track identity unavailable')
@@ -112,7 +123,7 @@ class MPVPostloadSnapshot:
                 if (any(current[k] != expected[k] for k in expected)
                         or abs(current['position'] - old['position']) > 2
                         or current['seeking'] is not False
-                        or canonical(tracks()) != canonical(original_tracks)):
+                        or track_selection_guard(tracks()) != track_selection_guard(original_tracks)):
                     raise SnapshotUnavailable('selection changed before restoration')
                 key = 'sub_visibility' if prop == 'sub-visibility' else prop
                 if current[key] == target:
