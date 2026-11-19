@@ -62,15 +62,18 @@ def _video_id(command,args):
         if isinstance(value,bool):return None
         try:value=float(value)
         except (TypeError,ValueError,OverflowError):return None
-        if not math.isfinite(value) or value<0 or value>604800:return None
+        # -1 is receiver timing metadata only; this observer never seeks.
+        if not math.isfinite(value) or (value<0 and value!=-1) or value>604800:return None
     selected=args.get('videoId')
     if 'videoIds' in args:
         raw=args['videoIds'];index=args.get('currentIndex')
         if not isinstance(raw,str) or len(raw)>1200:return None
         values=raw.split(',')
         if not values or len(values)>100 or not all(_VIDEO.fullmatch(x) for x in values):return None
-        if not isinstance(index,str) or not re.fullmatch(r'\d{1,3}',index):return None
-        index=int(index)
+        if type(index) is int:
+            if not 0<=index<100:return None
+        elif isinstance(index,str) and re.fullmatch(r'\d{1,3}',index):index=int(index)
+        else:return None
         if index>=len(values):return None
         if selected is not None and selected!=values[index]:return None
         selected=values[index]
