@@ -14,12 +14,26 @@ import signal
 import subprocess
 import threading
 import time
+import traceback
 from urllib.parse import urlsplit
 
 from incoming_youtube_context import mode_token
 from youtube_incoming_coordinator import IncomingYouTubeCoordinator, ReceiverEventLedger
 from youtube_lounge_xhr_observer import connect_reader, SnapshotTracker
 from youtube_receiver_request_proof import ReceiverRequestProofs
+
+
+def owned_chrome_process(pid,proc_root=Path('/proc')):
+    """Read canonical unit PID identity without ptrace-gated exe resolution."""
+    if type(pid) is not int or pid<=0:raise RuntimeError('Chrome PID unavailable')
+    root=Path(proc_root);proc=root/str(pid)
+    if proc.stat().st_uid!=os.getuid() or (proc/'comm').read_text().strip()!='chrome':
+        raise RuntimeError('Chrome process ownership unavailable')
+    tail=(proc/'stat').read_text().rsplit(')',1)[1].split()
+    if len(tail)<20 or not tail[19].isdigit():raise RuntimeError('Chrome start identity unavailable')
+    boot=(root/'sys/kernel/random/boot_id').read_text().strip()
+    if not boot:raise RuntimeError('boot identity unavailable')
+    return (boot,pid,tail[19])
 
 
 class IncomingYouTubeRuntime:
@@ -59,22 +73,15 @@ class IncomingYouTubeRuntime:
             if not re.fullmatch(r'home-edge-media-backend-chrome-\d+\.service',unit):
                 raise RuntimeError('canonical Chrome unit unavailable')
             reply=subprocess.run(['systemctl','--user','show',unit,'-p','MainPID','--value'],
-                                 capture_output=True,text=True,timeout=3,
-                                 env={**os.environ,'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),
-                                      'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(os.getuid())+'/bus'})
-            if reply.returncode or not reply.stdout.strip().isdigit():raise RuntimeError('Chrome PID unavailable')
-            pid=int(reply.stdout.strip());proc=Path('/proc')/str(pid)
-            if proc.stat().st_uid!=os.getuid() or (proc/'exe').resolve(strict=True).name!='chrome':
-                raise RuntimeError('Chrome process ownership unavailable')
-            ticks=(proc/'stat').read_text().rsplit(')',1)[1].split()[19]
-            boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-            self.process_identity=(boot,pid,ticks)
-        boot,pid,ticks=self.process_identity
-        proc=Path('/proc')/str(pid)
-        if (proc.stat().st_uid!=os.getuid()
-                or (proc/'stat').read_text().rsplit(')',1)[1].split()[19]!=ticks):
-            raise RuntimeError('Chrome process changed')
-        return self.process_identity
+                capture_output=True,text=True,timeout=3,
+                env={**os.environ,'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),
+                     'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(os.getuid())+'/bus'})
+            if reply.returncode or not reply.stdout.strip().isdigit():
+                raise RuntimeError('Chrome PID unavailable')
+            self.process_identity=owned_chrome_process(int(reply.stdout.strip()))
+        observed=owned_chrome_process(self.process_identity[1])
+        if observed!=self.process_identity:raise RuntimeError('Chrome process changed')
+        return observed
 
     def context(self):
         p=self.player
@@ -189,5 +196,8 @@ class IncomingYouTubeRuntime:
                 window_started=started,request_proofs=self.proofs.snapshot())
         except Exception as error:
             self.close()
-            return {'state':'observer_unavailable','phase':phase,'error_type':type(error).__name__}
+            frames=traceback.extract_tb(error.__traceback__)
+            site=frames[-1] if frames else None
+            return {'state':'observer_unavailable','phase':phase,'error_type':type(error).__name__,
+                    'error_site':(Path(site.filename).name+':'+site.name+':'+str(site.lineno))[:160] if site else 'unknown'}
         finally:self._lock.release()
