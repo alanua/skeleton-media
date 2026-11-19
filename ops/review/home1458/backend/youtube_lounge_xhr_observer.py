@@ -32,9 +32,10 @@ return result;
 
 class SnapshotTracker:
     def __init__(self):
-        self.streams={};self.stats=Counter();self.commands=Counter();self.session_high={}
+        self.streams={};self.stats=Counter();self.commands=Counter();self.session_high={};self.batch_primed=False
     def consume(self,snapshots):
         if not isinstance(snapshots,list) or len(snapshots)>16:raise ValueError('Invalid bounded snapshot')
+        fresh=[];initial_batch=not self.batch_primed
         for snapshot in snapshots:
             if not isinstance(snapshot,dict):continue
             url=snapshot.get('url');meta=receiver_request(url)
@@ -45,6 +46,7 @@ class SnapshotTracker:
             text=snapshot.get('text')
             if not isinstance(text,str):continue
             raw=text.encode();key=hashlib.sha256(url.encode()).hexdigest();entry=self.streams.get(key)
+            was_primed=bool(entry is not None and entry['primed'])
             reset=entry is not None and len(raw)<entry['length']
             if entry is None or len(raw)<entry['length']:
                 if key not in self.streams and len(self.streams)>=64:self.stats['stream_bound_reached']+=1;continue
@@ -56,7 +58,7 @@ class SnapshotTracker:
             except LoungeProtocolError:self.stats['stream_rejected']+=1;continue
             entry['length']=len(raw);events=parser.evidence[before:]
             session=meta['session_digest'];baseline=self.session_high.get(session,meta['watermark'])
-            if not entry['primed'] and (session not in self.session_high or reset):
+            if initial_batch or (not entry['primed'] and (session not in self.session_high or reset)):
                 self.stats['priming_media_load_records']+=len(events)
                 entry['primed']=True
                 if parser.expected is not None or parser.buffer:entry['skip_partial_frame']=parser.frames+1
@@ -68,11 +70,16 @@ class SnapshotTracker:
                     if baseline is not None and event.sequence>baseline:
                         self.stats['fresh_media_load_records']+=1
                         baseline=event.sequence
+                        fresh.append({'sequence':event.sequence,'command':event.command,
+                            'video_sha256':event.video_sha256,'session_digest':session,
+                            'stream_digest':key,'observation_kind':'append' if was_primed else 'new_request'})
             if parser.watermark is not None:
                 self.session_high[session]=max(self.session_high.get(session,-1),parser.watermark)
             if parser.frames>frames:self.stats['frames_decoded']+=parser.frames-frames
         self.commands=Counter()
         for entry in self.streams.values():self.commands.update(entry['parser'].commands)
+        self.batch_primed=True
+        return fresh
     def report(self):
         shapes=Counter()
         for entry in self.streams.values():shapes.update(entry['parser'].media_shapes)
@@ -84,21 +91,32 @@ class SnapshotTracker:
 
 
 class NativeXHRReader:
-    def __init__(self,transport):self.transport=transport;self.sequence=0;self.objects=None;self.discovered_at=0
+    def __init__(self,transport,event_handler=None):
+        self.transport=transport;self.sequence=0;self.objects=None;self.discovered_at=0
+        self.event_handler=event_handler;self.network_observation_enabled=False
     def call(self,method,params):
-        if method not in {'Runtime.evaluate','Runtime.queryObjects','Runtime.callFunctionOn','Runtime.releaseObjectGroup'}:
+        if method not in {'Runtime.evaluate','Runtime.queryObjects','Runtime.callFunctionOn','Runtime.releaseObjectGroup','Network.enable','Network.disable'}:
             raise ValueError('Non-observation method refused')
+        if method=='Network.enable' and params!={'maxTotalBufferSize':2097152,'maxResourceBufferSize':262144,'maxPostDataSize':0}:
+            raise ValueError('Non-observation network configuration refused')
+        if method=='Network.disable' and params!={}:raise ValueError('Unexpected network parameters')
         if method=='Runtime.evaluate' and params.get('expression')!='XMLHttpRequest.prototype':raise ValueError('Unknown expression refused')
         if method=='Runtime.callFunctionOn' and params.get('functionDeclaration') not in {VERIFY_NATIVE_FN,READ_RECEIVER_FN}:raise ValueError('Unknown function refused')
         self.sequence+=1;seq=self.sequence;self.transport.send(json.dumps({'id':seq,'method':method,'params':params}));deadline=time.monotonic()+6
         while time.monotonic()<deadline:
             value=json.loads(self.transport.recv())
-            if value.get('id')!=seq:continue
+            if value.get('id')!=seq:
+                if self.event_handler is not None:self.event_handler(value)
+                continue
             if value.get('error'):raise RuntimeError('Native read failed')
             result=value.get('result') or {}
             if result.get('exceptionDetails'):raise RuntimeError('Native getter read failed')
             return result
         raise TimeoutError('Native read deadline exceeded')
+    def enable_network_observation(self):
+        self.call('Network.enable',{'maxTotalBufferSize':2097152,'maxResourceBufferSize':262144,'maxPostDataSize':0})
+        self.network_observation_enabled=True
+
     def snapshot(self):
         # Reuse the active request handles; a heap discovery is not needed on every poll.
         if self.objects is None or time.monotonic()-self.discovered_at>=30:
@@ -119,7 +137,9 @@ class NativeXHRReader:
         if not result or all(x.get('state')==4 for x in result if isinstance(x,dict)):self.objects=None
         return result
     def close(self):
-        try:self.call('Runtime.releaseObjectGroup',{'objectGroup':GROUP})
+        try:
+            if self.network_observation_enabled:self.call('Network.disable',{})
+            self.call('Runtime.releaseObjectGroup',{'objectGroup':GROUP})
         finally:self.transport.close()
 
 
