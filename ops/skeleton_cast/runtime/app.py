@@ -22,6 +22,7 @@ import yaml
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 import media_search
+import movie_atlas
 import native_app_update_manifest
 import player
 import site_registry
@@ -88,6 +89,7 @@ TARGET_LABELS = {'tv': 'TV', 'samsung': 'Samsung Kiosk'}
 MEDIA_TARGET_POSITION_TOLERANCE_SECONDS = 12.0
 MEDIA_TARGET_WAIT_SECONDS = 8.0
 _CLEAR_CHARGE = object()
+_MOVIE_ATLAS = movie_atlas.AtlasStore()
 
 
 def _atomic(path: Path, value: dict) -> None:
@@ -343,14 +345,30 @@ def _history_item_key(item: dict) -> str:
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
 
 
-def _history_public_items(endpoint: object = None) -> dict:
-    store = _load_endpoint_history_store()
-    history_id = _resolve_history_id(endpoint)
-    bucket = _history_bucket(store, history_id)
+def _history_public_items(endpoint: object = None, *, read_only: bool = False) -> dict:
+    if read_only:
+        history_id = HOME_EDGE_TV_HISTORY_ID
+        # Project the same TV bucket without triggering the regular loader's migration.
+        path = _endpoint_history_store_path()
+        store = _read_json(path)
+        if not store and not path.exists():
+            legacy = _read_json(Path(getattr(player, 'WATCH_HISTORY', WATCH_HISTORY_LEGACY)))
+            if legacy.get('schema') == WATCH_HISTORY_LEGACY_SCHEMA:
+                store = _history_default(_history_items_from_payload(legacy))
+        histories = store.get('histories')
+        bucket = histories.get(history_id) if store.get('schema') == WATCH_HISTORY_ENDPOINT_SCHEMA and isinstance(histories, dict) else None
+        bucket = bucket if isinstance(bucket, dict) and isinstance(bucket.get('items'), list) else {}
+    else:
+        store = _load_endpoint_history_store()
+        history_id = _resolve_history_id(endpoint)
+        bucket = _history_bucket(store, history_id)
+    items = bucket.get('items', [])
+    if read_only:
+        items = items[:movie_atlas.MAX_ITEMS * 2]
     return {
         'schema': WATCH_HISTORY_ENDPOINT_SCHEMA,
         'history_id': history_id,
-        'items': [dict(item, history_key=_history_item_key(item)) for item in bucket.get('items', []) if isinstance(item, dict)],
+        'items': [dict(item, history_key=_history_item_key(item)) for item in items if isinstance(item, dict)],
         'migration': store.get('migration') if isinstance(store.get('migration'), dict) else {},
     }
 
@@ -1230,6 +1248,210 @@ def phone() -> str:
 def video() -> str:
     _require()
     return _template('video.html')
+
+
+@app.get('/movie-atlas')
+@app.get('/movie-atlas/display')
+def movie_atlas_page() -> Response:
+    _require()
+    return send_from_directory(STATIC / 'movie_atlas', 'index.html')
+
+
+def _atlas_error(exc: movie_atlas.AtlasError) -> tuple[Response, int]:
+    return jsonify({'error': str(exc), 'code': exc.code}), exc.status
+
+
+def _atlas_entries(selected_id: str | None = None):
+    items = _history_public_items(read_only=True)['items']
+    withdrawn = {item['history_key'] for item in items if not movie_atlas.visible(item)}
+    for item in items:
+        if item['history_key'] in withdrawn:
+            continue
+        item_id = hashlib.sha256(item['history_key'].encode('utf-8', errors='surrogatepass')).hexdigest()
+        if selected_id is not None and item_id != selected_id:
+            continue
+        job_id = item.get('job_id')
+        if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{16}', job_id):
+            continue
+        job = _read_json(_job_path(job_id))
+        if job.get('job_id') != job_id or not movie_atlas.visible(job):
+            continue
+        metadata = job.get('catalog')
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if not movie_atlas.visible(metadata):
+            continue
+        yield item, {
+            'id': item_id,
+            'title': job.get('title') or item.get('title') or item.get('display_title'),
+            'year': metadata.get('year') or item.get('year'),
+            'genres': metadata.get('genres') or metadata.get('genre') or item.get('genres') or item.get('genre'),
+            'poster': metadata.get('poster') or job.get('poster') or item.get('poster'),
+        }
+
+
+def _atlas_catalog() -> list[dict]:
+    catalog = movie_atlas.public_catalog(projected for _, projected in _atlas_entries())
+    for item in catalog:
+        poster = item.get('poster')
+        if poster and not _atlas_bounded_poster(poster):
+            del item['poster']
+    return catalog
+
+
+def _atlas_bounded_poster(poster: str) -> bool:
+    # Inspect only the header of the already-cached local image. Older caches
+    # can still contain the original, oversized source image.
+    from PIL import Image
+
+    path = POSTERS / poster.split('?', 1)[0].rsplit('/', 1)[-1]
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
+            return False
+        with Image.open(path, formats=['JPEG', 'PNG', 'WEBP', 'AVIF']) as image:
+            return (image.width <= 960 and image.height <= 960
+                    and getattr(image, 'n_frames', 1) == 1)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return False
+
+
+def _atlas_find_selection(selected_id: str) -> dict | None:
+    return next((item for item, _ in _atlas_entries(selected_id)), None)
+
+
+def _atlas_owner_probe() -> dict:
+    result = subprocess.run(
+        [str(HOME / '.local/bin/home-edge-media-display-owner'), 'status'],
+        capture_output=True, text=True, timeout=6, check=False,
+    )
+    report = json.loads(result.stdout)
+    if result.returncode != 1 or report.get('schema_version') != 'skeleton.home_edge.media_display_ownership.v1':
+        return {}
+    return report
+
+
+def _atlas_require_display_clear() -> None:
+    try:
+        report = _atlas_owner_probe()
+        if report.get('state') == 'CLEAR':
+            if report.get('reason') == 'display_mode_off':
+                return
+            # The saver guard also calls paused video clear. Atlas requires positive
+            # evidence that the foreground desktop player has stopped.
+            if report.get('reason') == 'confirmed_video_not_playing' and any(
+                observation.get('source') == 'skeleton_cast_player'
+                and observation.get('state') == 'CLEAR'
+                and observation.get('reason') == 'player_running_false'
+                for observation in report['observations']
+            ):
+                return
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError, KeyError):
+        pass
+    raise movie_atlas.AtlasError('Екран зайнятий або його стан невідомий.', 409, 'display_busy')
+
+
+def _atlas_require_write(*, empty_body: bool = False) -> None:
+    _require()
+    if (request.headers.get('Origin') != request.host_url.rstrip('/')
+            or request.headers.get('Sec-Fetch-Site') not in (None, 'same-origin')):
+        abort(403, description='Atlas requires a same-origin browser write.')
+    if (request.content_length or 0) > 2048:
+        abort(413)
+    if empty_body and request.stream.read(1):
+        abort(400)
+
+
+def _atlas_json(fields: set[str]) -> dict:
+    raw = request.stream.read(2049)
+    if len(raw) > 2048:
+        raise movie_atlas.AtlasError('Завеликий запит.', 413, 'too_large')
+    try:
+        data = json.loads(raw) if request.is_json else None
+    except (ValueError, RecursionError):
+        data = None
+    if not isinstance(data, dict) or data.keys() != fields:
+        raise movie_atlas.AtlasError('Некоректний запит Кіноатласу.')
+    return data
+
+
+@app.post('/api/movie-atlas/sessions')
+def movie_atlas_create() -> Response:
+    _atlas_require_write(empty_body=True)
+    try:
+        _atlas_require_display_clear()
+        return jsonify(_MOVIE_ATLAS.create(_atlas_catalog())), 201
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.post('/api/movie-atlas/join')
+def movie_atlas_join() -> Response:
+    _atlas_require_write()
+    try:
+        data = _atlas_json({'code'})
+        return jsonify(_MOVIE_ATLAS.join(data['code'], require_clear=_atlas_require_display_clear))
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.get('/api/movie-atlas/sessions/<code>')
+def movie_atlas_snapshot(code: str) -> Response:
+    _require()
+    role = request.args.get('role', 'display')
+    token = request.headers.get('X-Atlas-Token')
+    if role not in {'controller', 'display'}:
+        return jsonify({'error': 'Невідома роль.', 'code': 'invalid'}), 400
+    try:
+        if role == 'display':
+            _MOVIE_ATLAS.read(code, token, role, seen=False)
+            _atlas_require_display_clear()
+        return jsonify(_MOVIE_ATLAS.read(code, token, role))
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.put('/api/movie-atlas/sessions/<code>')
+def movie_atlas_update(code: str) -> Response:
+    _atlas_require_write()
+    try:
+        data = _atlas_json({'revision', 'state'})
+        return jsonify(_MOVIE_ATLAS.update(
+            code, request.headers.get('X-Atlas-Token'), data['revision'], data['state'],
+            selection_available=_atlas_find_selection,
+        ))
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.delete('/api/movie-atlas/sessions/<code>')
+def movie_atlas_close(code: str) -> Response:
+    _atlas_require_write(empty_body=True)
+    try:
+        _MOVIE_ATLAS.close(code, request.headers.get('X-Atlas-Token'))
+        return jsonify({'status': 'closed'})
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.post('/api/movie-atlas/sessions/<code>/handoff')
+def movie_atlas_handoff(code: str) -> Response:
+    _atlas_require_write(empty_body=True)
+    try:
+        snapshot = _MOVIE_ATLAS.read(code, request.headers.get('X-Atlas-Token'), 'controller')
+        selected = snapshot['state']['selected_id']
+        if not selected or _atlas_find_selection(selected) is None:
+            raise movie_atlas.AtlasError('Вибраний фільм недоступний.', 409, 'selection_unavailable')
+        return jsonify({'status': 'selected', 'selection_url': '/video?' + urlencode({'atlas_history': selected})})
+    except movie_atlas.AtlasError as exc:
+        return _atlas_error(exc)
+
+
+@app.get('/api/movie-atlas/selection/<item_id>')
+def movie_atlas_selection(item_id: str) -> Response:
+    _require()
+    item = _atlas_find_selection(item_id) if re.fullmatch(r'[0-9a-f]{64}', item_id) else None
+    if item is None:
+        return jsonify({'error': 'Вибраний фільм недоступний.'}), 404
+    return jsonify({key: item[key] for key in ('job_id', 'source_id', 'season', 'episode', 'translation', 'group') if key in item})
 
 
 @app.get('/remote')

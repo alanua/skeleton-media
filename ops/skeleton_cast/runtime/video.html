@@ -19,6 +19,7 @@
   <div class="header-actions" data-home-header-actions></div>
 </header>
 <main class="detail-main video-main">
+  <a id="movieAtlasEntry" href="/movie-atlas">Кіноатлас</a>
   <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
   <section class="card form-card">
@@ -317,6 +318,31 @@ async function loadHistory(force=false){
   return historyLoadPromise;
 }
 async function openHistory(historyId=$('history').value){if(!historyId)return;setReady(false);message('Відкриваю з історії…');try{const[r,j]=await jf('/api/video/history/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({history_id:historyId})});if(!r.ok)throw new Error(j.error||'Не вдалося відкрити історію');currentJobId=j.job_id;setLocked(false);await loadJob(j.preferred||{});message('Завантажено з історії без нового пошуку')}catch(e){message(e.message||'Історія недоступна',true)}}
+$('movieAtlasEntry').addEventListener('click',()=>{
+  try{
+    sessionStorage.removeItem('movie-atlas:return-selection');
+    if(!currentJobId)return;
+    sessionStorage.setItem('movie-atlas:return-selection',JSON.stringify({
+      job_id:currentJobId,locked,source_id:selectedSource()?.source_id,
+      season:$('season').value,episode:$('episode').value,voice:$('voice').value,quality:$('quality').value
+    }));
+  }catch(e){}
+});
+function atlasReturnSelection(){
+  try{
+    const saved=JSON.parse(sessionStorage.getItem('movie-atlas:return-selection'));
+    sessionStorage.removeItem('movie-atlas:return-selection');
+    if(saved&&/^[0-9a-f]{16}$/.test(saved.job_id))return saved;
+  }catch(e){}
+  return {};
+}
+async function openAtlasHistory(historyKey){
+  const [response,item]=await jf('/api/movie-atlas/selection/'+encodeURIComponent(historyKey),{cache:'no-store'});
+  if(!response.ok||!item.job_id)throw new Error(item.error||'Вибраний фільм недоступний');
+  currentJobId=item.job_id;
+  setLocked(false);
+  await loadJob({source_id:item.source_id,season:item.season,episode:item.episode,voice:item.translation||item.group});
+}
 async function resolveUrl(){const url=$('url').value.trim();if(!url)return;setResetReady();resetOptions('Шукаю доступні варіанти…');renderCatalog({page_url:url,title:'Пошук відео'},'Шукаю картку й українські джерела…');setReady(false);message('Шукаю відео…');try{const[r,j]=await jf('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});if(!r.ok){message(j.error||'Не вдалося прочитати посилання',true);return}currentJobId=j.job_id;setLocked(false);writeSession();loadJob({})}catch(e){setReady(false);message('Home Edge недоступний',true)}}
 async function applyTrack(kind,value){const[r,j]=await jf('/api/player/track/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:value})});if(!r.ok)throw new Error(j.error||'Не вдалося змінити доріжку');currentPlayer=j.player||currentPlayer}
 async function continueSaved(){if(!currentJobId){message('Оберіть твір',true);return}$('continueButton').disabled=true;message('Відновлюю збережений перегляд…');try{const[r,j]=await jf('/api/video/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:currentJobId})});if(!r.ok)throw new Error(j.error||'Немає збереженого моменту');currentJobId=j.job_id;setLocked(true);await loadJob(j.preferred||{});message('Продовжено зі збереженого місця');setTimeout(()=>shellNavigate('/phone'),120)}catch(e){message(e.message||'Не вдалося продовжити перегляд',true)}finally{$('continueButton').disabled=!currentJobId}}
@@ -352,6 +378,6 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshVis
 window.addEventListener('pageshow',()=>refreshVisibleVideoCatalog());
 setInterval(()=>refreshVisibleVideoCatalog(),90000);
 
-async function boot(){setReady(false);setResetReady();await loadHistory();await loadAutoplay();const params=new URLSearchParams(location.search);if(params.get('edit')==='history')setTimeout(()=>openHistorySheet(true),0);const sharedJob=params.get('job_id');if(sharedJob){currentJobId=sharedJob;setLocked(false);let preferred={};try{const[r,p]=await jf('/api/player',{cache:'no-store'});if(r.ok&&p.running&&p.job_id===sharedJob){currentPlayer=p;preferred={source_id:p.source_id,season:p.season,episode:p.episode,voice:p.translation}}}catch(e){}await loadJob(preferred);return}const saved=await readSession();if(saved.job_id){currentJobId=saved.job_id;$('url').value=saved.url||'';setLocked(!!saved.locked);await loadJob(saved);return}try{const[r,p]=await jf('/api/player');if(r.ok&&p.running&&p.job_id){currentPlayer=p;currentJobId=p.job_id;setLocked(true);await loadJob({source_id:p.source_id});await writeSession()}}catch(e){}}boot();
+async function boot(){setReady(false);setResetReady();await loadHistory();await loadAutoplay();const params=new URLSearchParams(location.search);if(params.get('edit')==='history')setTimeout(()=>openHistorySheet(true),0);if(params.has('atlas_back')){const prior=atlasReturnSelection();history.replaceState(history.state,'','/video');if(prior.job_id){currentJobId=prior.job_id;setLocked(prior.locked);await loadJob(prior);return}}const atlasHistory=params.get('atlas_history');if(atlasHistory){atlasReturnSelection();try{await openAtlasHistory(atlasHistory);return}catch(e){message(e.message||'Вибір Кіноатласу недоступний',true)}}const sharedJob=params.get('job_id');if(sharedJob){currentJobId=sharedJob;setLocked(false);let preferred={};try{const[r,p]=await jf('/api/player',{cache:'no-store'});if(r.ok&&p.running&&p.job_id===sharedJob){currentPlayer=p;preferred={source_id:p.source_id,season:p.season,episode:p.episode,voice:p.translation}}}catch(e){}await loadJob(preferred);return}const saved=await readSession();if(saved.job_id){currentJobId=saved.job_id;$('url').value=saved.url||'';setLocked(!!saved.locked);await loadJob(saved);return}try{const[r,p]=await jf('/api/player');if(r.ok&&p.running&&p.job_id){currentPlayer=p;currentJobId=p.job_id;setLocked(true);await loadJob({source_id:p.source_id});await writeSession()}}catch(e){}}boot();
 </script>
 </body></html>
