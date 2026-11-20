@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кіноатлас</title>
+  <link rel="stylesheet" href="/static/movie_atlas/style.css">
+  <script defer src="/static/movie_atlas/state.js"></script>
+  <script defer src="/static/movie_atlas/app.js"></script>
+</head>
+<body>
+<header>
+  <a href="/video?atlas_back=1" id="back">← Відео</a>
+  <strong>Кіноатлас</strong>
+  <span id="connection" role="status">Не під’єднано</span>
+</header>
+<main>
+  <p id="error" role="alert" hidden></p>
+  <section id="pair">
+    <h1>Спільний Кіноатлас</h1>
+    <div id="controllerPair">
+      <p>Створіть сесію й введіть її код на екрані.</p>
+      <button id="create">Створити сесію</button>
+    </div>
+    <form id="join" hidden>
+      <label for="code">Код з телефона</label>
+      <input id="code" maxlength="6" autocomplete="off" autocapitalize="characters" required>
+      <button>Під’єднати екран</button>
+    </form>
+  </section>
+  <section id="atlas" hidden>
+    <div class="session">
+      <span>Код <b id="pairCode"></b></span>
+      <a id="displayLink" href="/movie-atlas/display" target="_blank" rel="noopener">Сторінка для екрана</a>
+      <button id="flat" aria-pressed="false">Плоский вигляд</button>
+      <button id="fullscreen">На весь екран</button>
+      <button id="exit">Закрити сесію</button>
+    </div>
+    <div class="tools" id="tools">
+      <label>Пошук <input id="query" type="search" maxlength="80"></label>
+      <label>Жанр <select id="genre"></select></label>
+      <label>Від року <select id="yearMin"></select></label>
+      <label>До року <select id="yearMax"></select></label>
+      <label>Порядок <select id="sort">
+        <option value="recent">Нещодавні</option>
+        <option value="title">За назвою</option>
+        <option value="year">За роком</option>
+      </select></label>
+      <div id="cameraTools">
+        <button id="zoomOut" aria-label="Віддалити">−</button>
+        <button id="resetCamera">Скинути ракурс</button>
+        <button id="zoomIn" aria-label="Наблизити">+</button>
+      </div>
+    </div>
+    <section id="detail" aria-label="Вибраний фільм">
+      <h1 id="selectedTitle">Фільм не вибрано</h1>
+      <p id="selectedMeta" hidden></p>
+      <div id="selectionActions">
+        <button id="clearSelection" disabled>Скасувати вибір</button>
+        <button id="choose" disabled>До вибору відео</button>
+      </div>
+    </section>
+    <p id="cameraHint">Перетягніть стрічку або сфокусуйте її й скористайтеся клавішами зі стрілками.</p>
+    <div id="viewport" role="region" aria-label="Стрічка фільмів" tabindex="0">
+      <ol id="posters"></ol>
+    </div>
+    <p id="empty" hidden></p>
+  </section>
+</main>
+</body>
+</html>
