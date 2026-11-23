@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
-from urllib.parse import urlsplit
 import re
 import time
 
@@ -105,7 +104,8 @@ class InventoryItem:
 @dataclass(frozen=True, slots=True)
 class AccountStatus:
     plan: str
-    premium_expires_at: int | None
+    premium_seconds_left: int | None
+    expiration_iso: str | None
 
 
 class RealDebridProvider:
@@ -209,15 +209,12 @@ class RealDebridProvider:
             raise ProviderError("INVALID_RESPONSE")
         if not isinstance(verification_url, str):
             raise ProviderError("INVALID_RESPONSE")
-        parts = urlsplit(verification_url)
-        if (
-            parts.scheme != "https"
-            or parts.hostname not in {"real-debrid.com", "www.real-debrid.com"}
-            or parts.port not in {None, 443}
-            or parts.path != "/device"
-            or parts.username is not None
-            or parts.password is not None
-        ):
+        # An exact trusted URL also rejects URL userinfo, suffix-host tricks,
+        # malformed ports, queries and fragments without exposing raw values.
+        if verification_url not in {
+            "https://real-debrid.com/device",
+            "https://www.real-debrid.com/device",
+        }:
             raise ProviderError("INVALID_VERIFICATION_URL")
         if not (2 <= interval <= 120 and 60 <= expires_in <= 3600):
             raise ProviderError("INVALID_RESPONSE")
@@ -259,9 +256,16 @@ class RealDebridProvider:
             raise ProviderError("INVALID_RESPONSE")
         kind = str(data.get("type") or "unknown").lower()
         plan = kind if kind in {"premium", "free"} else "unknown"
-        timestamp = data.get("premium")
-        expires = int(timestamp) if isinstance(timestamp, (int, float)) and timestamp > 0 else None
-        return AccountStatus(plan, expires)
+        # Real-Debrid documents "premium" as seconds LEFT, not a Unix timestamp.
+        # "expiration" is a separate RFC3339/JSON date string.
+        seconds = data.get("premium")
+        remaining = seconds if type(seconds) is int and seconds >= 0 else None
+        expiry = data.get("expiration")
+        if not isinstance(expiry, str) or len(expiry) > 40 or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", expiry
+        ):
+            expiry = None
+        return AccountStatus(plan, remaining, expiry)
 
     @staticmethod
     def _items(payload: object, kind: str) -> tuple[InventoryItem, ...]:
@@ -282,7 +286,13 @@ class RealDebridProvider:
             name = name[:512] if isinstance(name, str) else ""
             raw_size = entry.get("bytes") if kind == "torrent" else entry.get("filesize")
             size = raw_size if type(raw_size) is int and raw_size >= 0 else None
-            state = str(entry.get("status") or "unknown")[:48] if kind == "torrent" else "listed"
+            state = str(entry.get("status") or "unknown").lower() if kind == "torrent" else "listed"
+            if state not in {
+                "unknown", "downloaded", "waiting_files_selection", "downloading",
+                "queued", "magnet_conversion", "magnet_error", "uploading",
+                "compressing", "error", "virus", "dead", "listed",
+            }:
+                state = "unknown"
             # Never propagate "download", "link", "links", user identity or signed URLs.
             result.append(InventoryItem(identifier, kind, name, size, state))
         return tuple(result)
