@@ -122,6 +122,8 @@ def enroll_verified_missing(
     streams from missing metadata. Existing schedules/visibility stay intact.
     """
     _check_database(conn)
+    if conn.in_transaction:
+        raise WatchStateError("EXTERNAL_TRANSACTION_ACTIVE")
     if (
         not isinstance(media_uid, str) or not _UID.fullmatch(media_uid)
         or media_type not in _KINDS
@@ -247,6 +249,7 @@ def claim_due(
     now_utc: int,
     lease_id: str,
     lease_seconds: int = 300,
+    global_enabled: bool = True,
     max_works: int = 12,
     max_provider_calls: int = 24,
 ) -> tuple[ClaimedWork, ...]:
@@ -259,6 +262,7 @@ def claim_due(
     _check_database(conn)
     if (
         conn.in_transaction
+        or type(global_enabled) is not bool
         or not _utc(now_utc)
         or not isinstance(lease_id, str) or not _LEASE.fullmatch(lease_id)
         or type(lease_seconds) is not int or not 1 <= lease_seconds <= _MAX_LEASE
@@ -270,7 +274,8 @@ def claim_due(
         conn.execute("BEGIN IMMEDIATE")
         candidates, lookup = _candidates(conn, guards=guards, now_utc=now_utc)
         plan = plan_rechecks(
-            candidates, now_utc=now_utc, max_works=max_works,
+            candidates, now_utc=now_utc, global_enabled=global_enabled,
+            max_works=max_works,
             max_provider_calls=max_provider_calls,
         )
         for key in plan.work_keys:
