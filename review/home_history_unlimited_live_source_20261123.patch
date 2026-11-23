@@ -1,0 +1,23 @@
+--- a/private-live-app.py
++++ b/private-live-app.py
+@@ -6701,7 +6701,10 @@
+         -int(item.get('added_at') or 0),
+         str(item.get('title') or '').casefold(),
+     ))
+-    payload = {'items': items[:100], 'sort': 'added_or_viewed_desc'}
++    # Return all canonical works; the client should virtualize poster rendering.
++    visible_count = sum(not bool(item.get('hidden', False)) for item in items)
++    payload = {'items': items, 'sort': 'added_or_viewed_desc',
++               'counts': {'total': len(items), 'visible': visible_count, 'hidden': len(items) - visible_count}}
+     with _HISTORY_RESPONSE_CACHE_LOCK:
+         _HISTORY_RESPONSE_CACHE['signature'] = signature
+         _HISTORY_RESPONSE_CACHE['payload'] = payload
+@@ -9585,7 +9588,8 @@
+     return {
+         'schema':'skeleton.media.endpoint_work_history.v2',
+         'history_id':history_id,
+-        'items':public[:100],
++        'items':public,
++        'counts': {'total': len(public), 'visible': sum(not bool(item.get('hidden', False)) for item in public)},
+         'migration':store.get('migration') if isinstance(store.get('migration'),dict) else {},
+     }
