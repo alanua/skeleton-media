@@ -109,6 +109,9 @@ def test_device_credentials_are_private():
     "https://real-debrid.com/another",
     "https://user@real-debrid.com/device",
     "https://real-debrid.com:444/device",
+    "https://real-debrid.com:bad/device",
+    "https://real-debrid.com/device?code=private",
+    "https://real-debrid.com/device#private",
 ])
 def test_device_flow_rejects_untrusted_verification_urls(url):
     data = {**DEVICE_RESPONSE, "verification_url": url}
@@ -136,10 +139,11 @@ def test_read_only_account_status_drops_identity():
         "username": "private-account-name",
         "email": "private@example.invalid",
         "type": "premium",
-        "premium": 1799000000,
+        "premium": 86400,
+        "expiration": "2026-11-24T12:00:00.000Z",
     }))
     result = provider(fake).account_status()
-    assert result == AccountStatus("premium", 1799000000)
+    assert result == AccountStatus("premium", 86400, "2026-11-24T12:00:00.000Z")
     assert "email" not in repr(result)
     assert fake.calls[0][1].endswith("/rest/1.0/user")
     assert fake.calls[0][3]["Authorization"] == "Bearer SYNTHETIC_SECRET_NEVER_LOG"
@@ -282,10 +286,32 @@ def test_no_torrent_write_apis_in_initial_source_slice():
 
 
 def test_subscription_free_is_not_automatically_premium():
-    assert provider(FakeTransport(response({"type": "free", "premium": 0}))).account_status() == AccountStatus("free", None)
+    assert provider(FakeTransport(response({"type": "free", "premium": 0}))).account_status() == AccountStatus("free", 0, None)
 
 
 def test_no_media_selection_mutation():
     selected = {"job_id": "active-user-youtube-session", "endpoint": "tv"}
     provider(FakeTransport(response([]))).list_torrents()
     assert selected == {"job_id": "active-user-youtube-session", "endpoint": "tv"}
+
+
+def test_premium_seconds_left_not_mistaken_for_epoch_expiry():
+    data = {"type": "premium", "premium": 3600, "expiration": "2026-11-23T15:00:00.000Z"}
+    result = provider(FakeTransport(response(data))).account_status()
+    assert result.premium_seconds_left == 3600
+    assert result.expiration_iso == "2026-11-23T15:00:00.000Z"
+
+
+def test_premium_boolean_and_invalid_expiry_fail_closed():
+    data = {"type": "premium", "premium": True, "expiration": "https://signed.invalid/?token=SECRET"}
+    result = provider(FakeTransport(response(data))).account_status()
+    assert result.premium_seconds_left is None
+    assert result.expiration_iso is None
+    assert "signed.invalid" not in repr(result)
+
+
+def test_unexpected_torrent_status_is_normalized_without_leaking_url():
+    rows = [{"id": "id123", "filename": "authorized.bin", "status": "https://signed.invalid/secret"}]
+    result = provider(FakeTransport(response(rows))).list_torrents()
+    assert result[0].status == "unknown"
+    assert "signed.invalid" not in repr(result)
