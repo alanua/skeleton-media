@@ -483,3 +483,44 @@ def test_no_external_active_transaction_committed_by_claim():
     with pytest.raises(WatchStateError, match="INVALID_LEASE"):
         claim(c)
     c.rollback()
+
+
+def test_global_watch_off_cannot_acquire_a_lease_even_when_due():
+    c = database()
+    add(c)
+    register(c)
+    before = c.execute(
+        "SELECT revision,lease_hash FROM media_source_watches"
+    ).fetchone()
+    assert claim(c, global_enabled=False) == ()
+    assert c.execute(
+        "SELECT revision,lease_hash FROM media_source_watches"
+    ).fetchone() == before
+
+
+def test_invalid_global_watch_setting_fails_closed():
+    c = database()
+    add(c)
+    register(c)
+    with pytest.raises(WatchStateError, match="INVALID_LEASE"):
+        claim(c, global_enabled="false")
+
+
+def test_enrollment_refuses_to_commit_unrelated_caller_transaction():
+    c = database()
+    add(c)
+    c.execute(
+        "UPDATE media_items SET title='inflight-uncommitted' WHERE media_uid=?",
+        (UID,),
+    )
+    with pytest.raises(WatchStateError, match="EXTERNAL_TRANSACTION_ACTIVE"):
+        register(c)
+    assert c.in_transaction is True
+    c.rollback()
+    assert c.execute(
+        "SELECT title FROM media_items WHERE media_uid=?",
+        (UID,),
+    ).fetchone()[0] == "Synthetic title"
+    assert c.execute(
+        "SELECT count(*) FROM media_source_watches"
+    ).fetchone()[0] == 0
