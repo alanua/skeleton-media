@@ -74,10 +74,17 @@ def patch_candidate(original: str, *, expected_sha: str=ANDROID_SHA) -> str:
             throw IllegalStateException("Повне відеоджерело ще не знайдено. Пошук триває у фоні.")
         }"""
     modified=original
-    for old,new in ((OLD,NEW),(OLD_QUERY,NEW_QUERY),(OLD_COUNTER,NEW_COUNTER),(old_open,new_open)):
+    for old,new in ((OLD,NEW),(OLD_COUNTER,NEW_COUNTER),(old_open,new_open)):
         if modified.count(old)!=1:
             raise ValueError("ANDROID_PATCH_ANCHOR_MISMATCH")
         modified=modified.replace(old,new,1)
+    # More than one screen defines the same 'val q='. Only the search box
+    # immediately preceding the editor's unique total/visible counter is ours.
+    editor_counter=modified.index(NEW_COUNTER)
+    search_at=modified.rfind(OLD_QUERY,0,editor_counter)
+    if search_at<0 or editor_counter-search_at>3500:
+        raise ValueError("ANDROID_HISTORY_EDITOR_QUERY_NOT_FOUND")
+    modified=modified[:search_at]+NEW_QUERY+modified[search_at+len(OLD_QUERY):]
     return modified
 
 def main() -> int:
