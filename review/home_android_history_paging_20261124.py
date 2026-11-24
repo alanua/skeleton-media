@@ -67,8 +67,14 @@ NEW_QUERY='    val q=query.trim().lowercase(Locale.ROOT)\n    val totalCount=ite
 def patch_candidate(original: str, *, expected_sha: str=ANDROID_SHA) -> str:
     if hashlib.sha256(original.encode()).hexdigest()!=expected_sha:
         raise ValueError("ANDROID_SOURCE_PARITY_FAILED")
+    old_open='        val open=api.post("/api/video/history/open",savedHistoryOpenBody(endpoint.endpointId,item,seasonHint))'
+    new_open=old_open+"""
+        // Do not spend up to 15 seconds polling a work with no full source.
+        if(open.optString("status") in setOf("discovering","no_verified_sources","searching_sources")){
+            throw IllegalStateException("Повне відеоджерело ще не знайдено. Пошук триває у фоні.")
+        }"""
     modified=original
-    for old,new in ((OLD,NEW),(OLD_QUERY,NEW_QUERY),(OLD_COUNTER,NEW_COUNTER)):
+    for old,new in ((OLD,NEW),(OLD_QUERY,NEW_QUERY),(OLD_COUNTER,NEW_COUNTER),(old_open,new_open)):
         if modified.count(old)!=1:
             raise ValueError("ANDROID_PATCH_ANCHOR_MISMATCH")
         modified=modified.replace(old,new,1)
