@@ -52,7 +52,7 @@ NEW_GET_ANCHOR = """def _history_page_payload(base: dict) -> dict:
         all_items = []
     query = str(request.args.get('q') or '').strip().casefold()[:120]
     try:
-        offset = max(0, min(1000000, int(request.args.get('offset') or 0)))
+        offset = max(0, int(request.args.get('offset') or 0))
         limit = max(1, min(100, int(request.args.get('limit') or 100)))
     except (TypeError, ValueError):
         offset, limit = 0, 100
@@ -61,8 +61,19 @@ NEW_GET_ANCHOR = """def _history_page_payload(base: dict) -> dict:
         if not query or query in str(item.get('title') or '').casefold()
         or query in str(item.get('original_title') or '').casefold()
     ]
-    visible = sum(not bool(item.get('hidden')) for item in all_items)
-    page = matches[offset:offset + limit]
+    visible = base.get('_visible_count')
+    if visible is None:
+        visible = sum(not bool(item.get('hidden')) for item in all_items)
+    import hashlib
+    import json
+    catalog_revision = base.get('_catalog_revision') or hashlib.sha256(
+        json.dumps(all_items, sort_keys=True, ensure_ascii=False,
+                   separators=(',', ':')).encode('utf-8')).hexdigest()
+    revision = hashlib.sha256((catalog_revision + ':' + query).encode('utf-8')).hexdigest()
+    supplied = str(request.args.get('revision') or '')
+    restart = (offset > len(matches) or (offset > 0 and supplied != revision)
+               or (bool(supplied) and supplied != revision))
+    page = [] if restart else matches[offset:offset + limit]
     return {
         'items': page,
         'sort': base.get('sort') or 'added_or_viewed_desc',
@@ -72,7 +83,8 @@ NEW_GET_ANCHOR = """def _history_page_payload(base: dict) -> dict:
         },
         'page': {
             'offset': offset, 'limit': limit, 'matching': len(matches),
-            'returned': len(page), 'has_more': offset + limit < len(matches),
+            'returned': len(page), 'revision': revision, 'restart_required': restart,
+            'has_more': not restart and offset + len(page) < len(matches),
         },
     }
 
@@ -88,7 +100,9 @@ def patch_source(source: str, *, expected_sha: str = DEPLOYED_SHA256) -> str:
         (OLD_PREF, NEW_PREF),
         (OLD_GET_ANCHOR, NEW_GET_ANCHOR),
         ("    payload = {'items': items[:100], 'sort': 'added_or_viewed_desc'}",
-         "    payload = {'items': items, 'sort': 'added_or_viewed_desc'}"),
+         "    payload = {'items': items, 'sort': 'added_or_viewed_desc',\n"
+         "               '_catalog_revision': hashlib.sha256(json.dumps(items, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest(),\n"
+         "               '_visible_count': sum(not bool(item.get('hidden')) for item in items)}"),
         ("    response = jsonify(payload)\n    # At this point the large temporary history graph",
          "    response = jsonify(_history_page_payload(payload))\n    # At this point the large temporary history graph"),
         # Endpoint-scoped watched history must not silently truncate at 100.
