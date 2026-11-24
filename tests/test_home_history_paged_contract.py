@@ -132,10 +132,12 @@ def test_backwards_compatible_first_page_and_true_totals(paging):
 
 def test_second_page_covers_same_items_not_duplicates(paging):
     fn,args,base=paging
-    first=fn(base)["items"]
-    args.values={"offset":"100"}
+    response=fn(base)
+    first=response["items"]
+    revision=response["page"]["revision"]
+    args.values={"offset":"100","revision":revision}
     second=fn(base)["items"]
-    args.values={"offset":"200"}
+    args.values={"offset":"200","revision":revision}
     last=fn(base)["items"]
     assert len(first)==len(second)==100
     assert len(last)==25
@@ -265,3 +267,39 @@ def test_private_source_patcher_requires_both_caps_in_baseline():
     source=fixture_source().replace("public[:100]","public[:99]")
     with pytest.raises(ValueError,match="PATCH_SOURCE_ANCHOR_MISMATCH"):
         patch_source(source,expected_sha=hashlib.sha256(source.encode()).hexdigest())
+
+
+@pytest.mark.parametrize("change",["insert","delete","reorder","hidden"])
+def test_revision_restart(paging,change):
+    fn,args,base=paging
+    rev=fn(base)["page"]["revision"]
+    if change=="insert":base["items"].insert(0,{"history_id":"new","title":"New"})
+    elif change=="delete":base["items"].pop(0)
+    elif change=="reorder":base["items"].reverse()
+    else:base["items"][1]["hidden"]=True
+    args.values={"offset":"100","revision":rev}
+    assert fn(base)["page"]["restart_required"] is True
+    assert fn(base)["items"]==[]
+    args.values={}
+    assert fn(base)["page"]["revision"]!=rev
+
+def test_unlimited_catalog(paging):
+    fn,args,base=paging
+    base["items"]=[{"history_id":str(i),"title":str(i),"hidden":i%7==0} for i in range(10001)]
+    r=fn(base)
+    rev=r["page"]["revision"]
+    out=[]
+    while True:
+        assert not r["page"]["restart_required"]
+        assert r["counts"]["total"]==10001
+        out.extend(r["items"])
+        if not r["page"]["has_more"]:break
+        args.values={"offset":str(len(out)),"revision":rev}
+        r=fn(base)
+    assert out==base["items"]
+
+def test_continuation_requires_matching_query_revision(paging):
+    fn,args,base=paging
+    rev=fn(base)["page"]["revision"]
+    for args.values in ({"offset":"100"},{"offset":"100","revision":rev,"q":"Film"}):
+        assert fn(base)["page"]["restart_required"] is True
