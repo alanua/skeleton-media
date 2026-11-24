@@ -67,9 +67,13 @@ def test_legacy_server_fallback_exists():
 
 def test_page_reader_bound_to_hundred():
     output=transformed()
-    assert "repeat(100)" in output
+    assert "while(true)" in output
     assert 'count>100' in output
-    assert "next>10_000" in output
+    assert "repeat(100)" not in output
+    assert "next>10_000" not in output
+    assert "restart_required" in output
+    assert "revision=$revision" in output
+    assert "canonical.size!=total" in output
 
 
 def test_page_offset_monotonic_and_actual_reply_checked():
@@ -92,7 +96,10 @@ def test_coroutine_cancellation_is_observed_between_pages():
 
 
 def test_history_is_canonical_deduplicated():
-    assert "return canonicalHistoryItems(collected)" in transformed()
+    output=transformed()
+    assert "val canonical=canonicalHistoryItems(collected)" in output
+    assert "canonical.size!=total" in output
+    assert "return canonical" in output
 
 
 def test_hidden_count_is_not_search_count():
@@ -118,7 +125,7 @@ def test_no_source_open_has_fast_error_before_load_job():
 
 def test_no_auto_play_or_mode_switch_added():
     output=transformed()
-    for danger in ('player.play(', 'skeleton-cast-control', 'systemctl', 'restart', 'deleteAll'):
+    for danger in ('player.play(', 'skeleton-cast-control', 'systemctl', 'deleteAll'):
         assert danger not in output
 
 
