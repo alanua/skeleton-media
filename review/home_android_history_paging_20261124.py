@@ -21,31 +21,61 @@ OLD = """private suspend fun savedVideoHistoryItemsWithRetry(api:HomeApi,attempt
 NEW = """// Server with no page field is accepted as a legacy single-page response.
 internal fun nextSavedVideoHistoryOffset(reply:JSONObject,expectedOffset:Int):Int?{
     val page=reply.optJSONObject("page") ?: return null
-    if(!page.optBoolean("has_more",false))return null
+    if(page.optBoolean("restart_required",false)){
+        throw IllegalStateException("Медіатека змінилася. Оновлюємо список.")
+    }
+    val hasMore=page.optBoolean("has_more",false)
     val actualOffset=page.optInt("offset",-1)
     val count=reply.optJSONArray("items")?.length() ?: 0
-    if(actualOffset!=expectedOffset || count<=0 || count>100 || expectedOffset<0){
+    if(actualOffset!=expectedOffset || (hasMore && count<=0) || count>100 || expectedOffset<0 ||
+       expectedOffset>Int.MAX_VALUE-count || page.optInt("returned",-1)!=count){
         throw IllegalStateException("Некоректна сторінка історії")
     }
     val next=expectedOffset+count
-    if(next>10_000)throw IllegalStateException("Історія перевищує ліміт безпечного читання")
-    return next
+    val matching=page.optInt("matching",-1)
+    if(matching<next || hasMore!=(next<matching)){
+        throw IllegalStateException("Неповна сторінка історії")
+    }
+    return if(hasMore)next else null
 }
 
 private suspend fun savedVideoHistoryItemsPaged(api:HomeApi):List<JSONObject>{
     val collected=mutableListOf<JSONObject>()
     var offset=0
-    repeat(100){
+    var revision:String?=null
+    while(true){
         currentCoroutineContext().ensureActive()
-        val path=if(offset==0)savedVideoHistoryPath() else "${savedVideoHistoryPath()}?offset=$offset&limit=100"
+        val path=if(offset==0)savedVideoHistoryPath() else "${savedVideoHistoryPath()}?offset=$offset&limit=100&revision=$revision"
         val response=api.get(path)
         currentCoroutineContext().ensureActive()
-        collected.addAll(response.optJSONArray("items")?.objects().orEmpty())
+        val rows=response.optJSONArray("items")?.objects().orEmpty()
+        val page=response.optJSONObject("page")
+        if(page==null){
+            if(offset!=0 || rows.size>=100)throw IllegalStateException("Сервер ще не підтримує повну медіатеку")
+            return canonicalHistoryItems(rows)
+        }
         val next=nextSavedVideoHistoryOffset(response,offset)
-        if(next==null)return canonicalHistoryItems(collected)
+        val pageRevision=page.optString("revision")
+        if(!pageRevision.matches(Regex("[0-9a-f]{64}")) || (revision!=null && revision!=pageRevision)){
+            throw IllegalStateException("Медіатека змінилася. Оновлюємо список.")
+        }
+        revision=pageRevision
+        val counts=response.optJSONObject("counts") ?: throw IllegalStateException("Лічильники медіатеки недоступні")
+        val total=counts.optInt("total",-1)
+        val visible=counts.optInt("visible",-1)
+        if(total!=page.optInt("matching",-1) || visible !in 0..total || counts.optInt("hidden",-1)!=total-visible){
+            throw IllegalStateException("Некоректні лічильники медіатеки")
+        }
+        collected.addAll(rows)
+        if(next==null){
+            val canonical=canonicalHistoryItems(collected)
+            if(canonical.size!=total || canonical.count{!it.optBoolean("hidden",false)}!=visible){
+                throw IllegalStateException("Неповна медіатека")
+            }
+            return canonical
+        }
         offset=next
     }
-    throw IllegalStateException("Історія не завершила завантаження")
 }
 private suspend fun savedVideoHistoryItemsWithRetry(api:HomeApi,attempts:Int=2):List<JSONObject>{
     var lastError:Throwable?=null
