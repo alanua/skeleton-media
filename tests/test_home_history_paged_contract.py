@@ -67,6 +67,14 @@ class Response:
     # At this point the large temporary history graph is no longer needed.
     _history_trim_heap()
     return response
+
+
+def endpoint_history(values):
+    public=values
+    return {
+        'items':public[:100],
+        'schema':'endpoint.v2',
+    }
 """
 
 
@@ -237,3 +245,23 @@ def test_missing_preference_file_returns_empty(tmp_path):
     }
     f=isolate_fn(patched_fixture(),"_history_preferences_read",globals_)
     assert f()=={}
+
+
+def test_second_endpoint_history_no_longer_truncates_at_100():
+    source=patched_fixture()
+    f=isolate_fn(source,"endpoint_history",{})
+    values=[
+        {"history_key":f"synthetic-{i}","hidden":bool(i%9==0)}
+        for i in range(225)
+    ]
+    result=f(values)
+    assert len(result["items"])==225
+    assert result["counts"]["total"]==225
+    assert result["counts"]["visible"]==sum(not row["hidden"] for row in values)
+    assert result["schema"]=="endpoint.v2"
+
+
+def test_private_source_patcher_requires_both_caps_in_baseline():
+    source=fixture_source().replace("public[:100]","public[:99]")
+    with pytest.raises(ValueError,match="PATCH_SOURCE_ANCHOR_MISMATCH"):
+        patch_source(source,expected_sha=hashlib.sha256(source.encode()).hexdigest())
