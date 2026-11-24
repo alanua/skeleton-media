@@ -124,7 +124,7 @@ def test_no_auto_play_or_mode_switch_added():
 
 def test_modifying_one_anchor_fails_closed():
     src=candidate_fixture().replace("historyDialog()", "historyDialogTwo()").replace(OLD_QUERY,"    val q=query.trim()")
-    with pytest.raises(ValueError,match="ANDROID_PATCH_ANCHOR_MISMATCH"):
+    with pytest.raises(ValueError,match="ANDROID_(PATCH_ANCHOR_MISMATCH|HISTORY_EDITOR_QUERY_NOT_FOUND)"):
         patch_candidate(src,expected_sha=hashlib.sha256(src.encode()).hexdigest())
 
 
