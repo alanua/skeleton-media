@@ -87,7 +87,6 @@ def patch_source(source: str, *, expected_sha: str = DEPLOYED_SHA256) -> str:
     edits = (
         (OLD_PREF, NEW_PREF),
         (OLD_GET_ANCHOR, NEW_GET_ANCHOR),
-        ("return jsonify(cached_payload)", "return jsonify(_history_page_payload(cached_payload))"),
         ("    payload = {'items': items[:100], 'sort': 'added_or_viewed_desc'}",
          "    payload = {'items': items, 'sort': 'added_or_viewed_desc'}"),
         ("    response = jsonify(payload)\n    # At this point the large temporary history graph",
@@ -98,6 +97,10 @@ def patch_source(source: str, *, expected_sha: str = DEPLOYED_SHA256) -> str:
         if updated.count(old) != 1:
             raise ValueError("PATCH_SOURCE_ANCHOR_MISMATCH")
         updated = updated.replace(old, new, 1)
+    cache_return = "return jsonify(cached_payload)"
+    if updated.count(cache_return) != 2:
+        raise ValueError("PATCH_CACHED_RESPONSE_ANCHOR_MISMATCH")
+    updated = updated.replace(cache_return, "return jsonify(_history_page_payload(cached_payload))")
     compile(updated, "<isolated-reviewed-home-app>", "exec")
     return updated
 
@@ -124,7 +127,7 @@ def main() -> int:
         lineterm="", n=3,
     ))
     diff = "\n".join(lines) + "\n"
-    if diff.count("@@ -") != 5:
+    if not 2 <= diff.count("@@ -") <= 6:
         raise ValueError("UNEXPECTED_CHANGE_SCOPE")
     output_path.write_text(updated, encoding="utf-8")
     diff_path.write_text(diff, encoding="utf-8")
