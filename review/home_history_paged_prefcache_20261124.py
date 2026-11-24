@@ -91,6 +91,11 @@ def patch_source(source: str, *, expected_sha: str = DEPLOYED_SHA256) -> str:
          "    payload = {'items': items, 'sort': 'added_or_viewed_desc'}"),
         ("    response = jsonify(payload)\n    # At this point the large temporary history graph",
          "    response = jsonify(_history_page_payload(payload))\n    # At this point the large temporary history graph"),
+        # Endpoint-scoped watched history must not silently truncate at 100.
+        ("        'items':public[:100],",
+         "        'items':public,\n"
+         "        'counts': {'total': len(public),\n"
+         "                   'visible': sum(not bool(item.get('hidden', False)) for item in public)},"),
     )
     updated = source
     for old, new in edits:
