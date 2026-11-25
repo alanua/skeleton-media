@@ -330,6 +330,24 @@ def complete_claim(
     lease_hash = hashlib.sha256(lease_id.encode()).hexdigest()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Revalidate persisted identity and OFF under the same write lock.
+        # A delayed worker result cannot apply to a disabled or reidentified work.
+        row = conn.execute("""
+            SELECT w.media_type,w.tmdb_id,w.watch_enabled,w.lease_expires_utc,
+                   m.media_type,m.tmdb_id,
+                   (SELECT COUNT(*) FROM media_items
+                    WHERE media_type=w.media_type AND tmdb_id=w.tmdb_id)
+            FROM media_source_watches w
+            JOIN media_items m ON m.media_uid=w.media_uid
+            WHERE w.media_uid=?
+        """, (claimed.media_uid,)).fetchone()
+        if (
+            row is None or row[2] != 1
+            or row[3] != claimed.expires_at_utc
+            or row[0] != row[4] or row[1] != row[5] or row[6] != 1
+            or claimed.work_key != f"tmdb:{row[0]}:{row[1]}"
+        ):
+            raise WatchStateError("CLAIM_IDENTITY_OR_SETTING_CHANGED")
         if outcome == "missing_verified":
             sql = """
                 UPDATE media_source_watches
