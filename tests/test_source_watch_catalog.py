@@ -524,3 +524,29 @@ def test_enrollment_refuses_to_commit_unrelated_caller_transaction():
     assert c.execute(
         "SELECT count(*) FROM media_source_watches"
     ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("change", ["off", "identity", "duplicate", "forged_key", "forged_expiry"])
+@pytest.mark.parametrize("outcome", ["missing_verified", "transient_failure"])
+def test_late_claim_cannot_commit_after_watch_or_identity_change(change, outcome):
+    c = database()
+    add(c)
+    register(c)
+    receipt = claim(c)[0]
+    if change == "off":
+        c.execute("UPDATE media_source_watches SET watch_enabled=0")
+    elif change == "identity":
+        c.execute("UPDATE media_items SET tmdb_id=12345 WHERE media_uid=?", (UID,))
+    elif change == "duplicate":
+        add(c, uid=UID2, ident=542178)
+    elif change == "forged_key":
+        receipt = replace(receipt, work_key="tmdb:movie:12345")
+    else:
+        receipt = replace(receipt, expires_at_utc=receipt.expires_at_utc+1)
+    c.commit()
+    before = c.execute("SELECT * FROM media_source_watches").fetchall()
+    with pytest.raises(WatchStateError, match="COMPLETION_ABORTED"):
+        complete_claim(c, claimed=receipt, lease_id=LEASE, now_utc=NOW+1,
+                       outcome=outcome,
+                       failure_kind="timeout" if outcome == "transient_failure" else None)
+    assert c.execute("SELECT * FROM media_source_watches").fetchall() == before
