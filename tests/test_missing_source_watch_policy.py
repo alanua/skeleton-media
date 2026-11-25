@@ -241,3 +241,23 @@ def test_large_work_input_budget_failure():
     records = [WatchWork(f"tmdb:tv:{i+1}", last_checked_utc=None) for i in range(20_001)]
     with pytest.raises(ValueError, match="WORK_BUDGET_EXCEEDED"):
         plan_rechecks(records, now_utc=NOW)
+
+
+@pytest.mark.parametrize("outcome", ["full_verified", "missing_verified", "indeterminate"])
+@pytest.mark.parametrize("suppressed", [True, False])
+def test_disabled_watch_preserves_visibility_even_for_late_result(outcome, suppressed):
+    result = reconcile_visibility(
+        work(watch_enabled=False, auto_suppressed=suppressed), outcome=outcome,
+    )
+    assert result == VisibilityDecision(suppressed, suppressed, False, "watch_disabled")
+
+
+def test_disabled_watch_does_not_override_manual_hide_or_tombstone():
+    assert reconcile_visibility(
+        work(watch_enabled=False, manual_hidden=True, auto_suppressed=False),
+        outcome="full_verified",
+    ).reason == "manual_hidden"
+    assert reconcile_visibility(
+        work(watch_enabled=False, deleted=True, auto_suppressed=False),
+        outcome="full_verified",
+    ).reason == "deleted"
