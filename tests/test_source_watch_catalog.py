@@ -550,3 +550,39 @@ def test_late_claim_cannot_commit_after_watch_or_identity_change(change, outcome
                        outcome=outcome,
                        failure_kind="timeout" if outcome == "transient_failure" else None)
     assert c.execute("SELECT * FROM media_source_watches").fetchall() == before
+
+
+def test_operator_off_then_on_invalidates_old_lease():
+    from skeleton_media.cast.source_watch_catalog import set_watch_enabled
+    c = database()
+    add(c)
+    register(c)
+    receipt = claim(c)[0]
+    before = c.execute("SELECT auto_suppressed,last_checked_utc FROM media_source_watches").fetchone()
+    assert set_watch_enabled(c, media_uid=UID, enabled=False, now_utc=NOW+1)
+    assert not set_watch_enabled(c, media_uid=UID, enabled=False, now_utc=NOW+2)
+    assert plan(c, now=NOW+2).work_keys == ()
+    assert set_watch_enabled(c, media_uid=UID, enabled=True, now_utc=NOW+3)
+    assert not set_watch_enabled(c, media_uid=UID, enabled=True, now_utc=NOW+4)
+    with pytest.raises(WatchStateError, match="COMPLETION_ABORTED"):
+        complete_claim(c, claimed=receipt, lease_id=LEASE, now_utc=NOW+4,
+                       outcome="missing_verified")
+    assert c.execute("SELECT auto_suppressed,last_checked_utc FROM media_source_watches").fetchone() == before
+    fresh = claim(c, now=NOW+4, lease=OTHER_LEASE)[0]
+    assert fresh.revision == receipt.revision+3
+    complete_claim(c, claimed=fresh, lease_id=OTHER_LEASE, now_utc=NOW+5,
+                   outcome="missing_verified")
+
+
+def test_operator_watch_setting_rejects_invalid_input_and_missing_row():
+    from skeleton_media.cast.source_watch_catalog import set_watch_enabled
+    c = database()
+    add(c)
+    register(c)
+    before = c.execute("SELECT * FROM media_source_watches").fetchall()
+    for value in (0, 1, None, "false"):
+        with pytest.raises(WatchStateError, match="INVALID_WATCH_SETTING"):
+            set_watch_enabled(c, media_uid=UID, enabled=value, now_utc=NOW)
+    with pytest.raises(WatchStateError, match="SETTING_CHANGE_ABORTED"):
+        set_watch_enabled(c, media_uid=UID2, enabled=False, now_utc=NOW)
+    assert c.execute("SELECT * FROM media_source_watches").fetchall() == before
