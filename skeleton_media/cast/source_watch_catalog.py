@@ -158,6 +158,51 @@ def enroll_verified_missing(
         raise WatchStateError("WATCH_ENROLLMENT_FAILED") from None
 
 
+
+def set_watch_enabled(
+    conn: sqlite3.Connection,
+    *,
+    media_uid: str,
+    enabled: bool,
+    now_utc: int,
+) -> bool:
+    """Trusted operator setting change; cancel prior leases atomically.
+
+    Repeating the same setting is a no-op. Neither enabling nor disabling
+    changes suppression, manual visibility, identity or check history.
+    The authenticated caller must supply the operator's explicit setting.
+    """
+    _check_database(conn)
+    if (
+        conn.in_transaction
+        or not isinstance(media_uid, str) or not _UID.fullmatch(media_uid)
+        or type(enabled) is not bool or not _utc(now_utc)
+    ):
+        raise WatchStateError("INVALID_WATCH_SETTING")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT watch_enabled FROM media_source_watches WHERE media_uid=?",
+            (media_uid,),
+        ).fetchone()
+        if row is None:
+            raise WatchStateError("WATCH_NOT_ENROLLED")
+        if row[0] == int(enabled):
+            conn.commit()
+            return False
+        conn.execute("""
+            UPDATE media_source_watches
+            SET watch_enabled=?,lease_hash=NULL,lease_expires_utc=NULL,
+                revision=revision+1,updated_at_utc=?
+            WHERE media_uid=?
+        """, (int(enabled), now_utc, media_uid))
+        conn.commit()
+        return True
+    except (sqlite3.Error, WatchStateError):
+        conn.rollback()
+        raise WatchStateError("SETTING_CHANGE_ABORTED") from None
+
+
 def _candidates(
     conn: sqlite3.Connection,
     *,
