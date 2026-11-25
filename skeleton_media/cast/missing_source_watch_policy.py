@@ -179,6 +179,10 @@ def reconcile_visibility(work: WatchWork, *, outcome: str) -> VisibilityDecision
         return VisibilityDecision(True, work.auto_suppressed, False, "deleted")
     if work.manual_hidden:
         return VisibilityDecision(True, work.auto_suppressed, False, "manual_hidden")
+    if not work.watch_enabled:
+        return VisibilityDecision(
+            work.auto_suppressed, work.auto_suppressed, False, "watch_disabled",
+        )
     if outcome == "full_verified":
         return VisibilityDecision(False, False, work.auto_suppressed, "verified_full")
     if outcome == "missing_verified":
