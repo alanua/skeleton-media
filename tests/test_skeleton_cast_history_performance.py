@@ -110,7 +110,7 @@ def test_media_history_cache_invalidates_after_save_update_delete_and_external_t
         reason="save",
     )
     saved = cast_app.media_history_get()["items"]
-    assert backend.load_calls == 2
+    assert backend.load_calls == 1
     assert len(saved) == 1
     assert saved[0]["position_seconds"] == 10.0
     history_key = saved[0]["history_key"]
@@ -121,7 +121,7 @@ def test_media_history_cache_invalidates_after_save_update_delete_and_external_t
         reason="update",
     )
     updated = cast_app.media_history_get()["items"]
-    assert backend.load_calls == 3
+    assert backend.load_calls == 1
     assert len(updated) == 1
     assert updated[0]["history_key"] == history_key
     assert updated[0]["position_seconds"] == 88.0
@@ -129,16 +129,32 @@ def test_media_history_cache_invalidates_after_save_update_delete_and_external_t
     deleted = cast_app.media_history_item_delete(history_key)
     assert deleted["deleted"] == 1
     assert cast_app.media_history_get()["items"] == []
-    assert backend.load_calls == 4
+    assert backend.load_calls == 1
 
     backend.write_store(_store(tv_items=[_item("external-a", position=33.0)]))
     external = cast_app.media_history_get()["items"]
-    assert backend.load_calls == 5
+    assert backend.load_calls == 2
     assert [item["history_key"] for item in external] == ["external-a"]
 
     backend.write_store(_store())
     assert cast_app.media_history_get()["items"] == []
-    assert backend.load_calls == 6
+    assert backend.load_calls == 3
+
+
+def test_warm_cache_returns_exact_independent_snapshots(monkeypatch, tmp_path: Path) -> None:
+    backend = _install_counting_backend(
+        monkeypatch,
+        tmp_path,
+        _store(tv_items=[_item("exact-entry", position=17.0)]),
+    )
+
+    first = cast_app._load_endpoint_history_store()
+    first["histories"][cast_app.HOME_EDGE_TV_HISTORY_ID]["items"][0]["position_seconds"] = 999.0
+    second = cast_app._load_endpoint_history_store()
+
+    assert second == json.loads(backend.WATCH_HISTORY_ENDPOINTS.read_text(encoding="utf-8"))
+    assert second["histories"][cast_app.HOME_EDGE_TV_HISTORY_ID]["items"][0]["position_seconds"] == 17.0
+    assert backend.load_calls == 1
 
 
 def test_authenticated_poster_route_still_requires_access_on_every_request(monkeypatch, tmp_path: Path) -> None:
@@ -194,3 +210,28 @@ def test_external_atomic_replace_during_loader_does_not_pin_stale_history(monkey
         "new-entry"
     ]
     assert backend.load_calls == 2
+
+
+def test_external_replace_during_save_does_not_cache_writer_snapshot(monkeypatch, tmp_path: Path) -> None:
+    """A writer that wins as the saver returns must remain the durable snapshot."""
+    backend = _install_counting_backend(monkeypatch, tmp_path, _store())
+    original_write = backend._write_endpoint_watch_history
+
+    def replace_before_return(store: dict) -> None:
+        original_write(store)
+        replacement = backend.WATCH_HISTORY_ENDPOINTS.with_name("replacement-after-save.json")
+        replacement.write_text(
+            json.dumps(_store(tv_items=[_item("external-winner", position=44.0)])),
+            encoding="utf-8",
+        )
+        replacement.replace(backend.WATCH_HISTORY_ENDPOINTS)
+
+    monkeypatch.setattr(backend, "_write_endpoint_watch_history", replace_before_return)
+    cast_app._save_endpoint_history_store(_store(tv_items=[_item("internal-loser", position=12.0)]))
+    monkeypatch.setattr(backend, "_write_endpoint_watch_history", original_write)
+
+    loaded = cast_app._load_endpoint_history_store()
+    assert [item["history_key"] for item in loaded["histories"]["home_edge_tv"]["items"]] == [
+        "external-winner"
+    ]
+    assert backend.load_calls == 1

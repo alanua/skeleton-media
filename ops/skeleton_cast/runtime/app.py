@@ -240,6 +240,21 @@ def _endpoint_history_cache_clear() -> None:
         _ENDPOINT_HISTORY_CACHE['store'] = None
 
 
+def _endpoint_history_cache_written_store(path: Path, store: dict) -> None:
+    """Cache a write only when it still exactly matches the durable snapshot."""
+    signature = _endpoint_history_file_signature(path)
+    durable = _read_json(path)
+    if (
+        durable == store
+        and _endpoint_history_file_signature(path) == signature
+    ):
+        _endpoint_history_cache_set(signature, durable)
+    else:
+        # An external writer may have replaced the file while our saver was
+        # returning.  Do not associate our snapshot with that writer's file.
+        _endpoint_history_cache_clear()
+
+
 def _load_endpoint_history_store() -> dict:
     path = _endpoint_history_store_path()
     signature = _endpoint_history_file_signature(path)
@@ -274,11 +289,12 @@ def _load_endpoint_history_store() -> dict:
 
 
 def _save_endpoint_history_store(store: dict) -> dict:
+    path = _endpoint_history_store_path()
     _endpoint_history_cache_clear()
     saver = getattr(player, '_write_endpoint_watch_history', None)
     if callable(saver):
         saver(store)
-        _endpoint_history_cache_clear()
+        _endpoint_history_cache_written_store(path, store)
         return store
     store['schema'] = WATCH_HISTORY_ENDPOINT_SCHEMA
     store['version'] = int(store.get('version') or 1)
@@ -287,7 +303,7 @@ def _save_endpoint_history_store(store: dict) -> dict:
     if not isinstance(histories, dict):
         store['histories'] = {}
     _atomic(WATCH_HISTORY_ENDPOINTS, store)
-    _endpoint_history_cache_clear()
+    _endpoint_history_cache_written_store(path, store)
     return store
 
 
